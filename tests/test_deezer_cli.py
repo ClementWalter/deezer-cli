@@ -76,3 +76,31 @@ def test_decrypt_cookie_roundtrips(chromium_cookie):
 
 def test_decrypt_cookie_rejects_unversioned_blob():
     assert deezer_cli._decrypt_cookie(b"plaintext-no-prefix", b"0" * 16) is None
+
+
+@pytest.fixture
+def liked_track():
+    return {
+        "SNG_ID": "9054516", "SNG_TITLE": "Foni",
+        "ART_ID": "70224", "ART_NAME": "Orfeas Peridis",
+        "ALB_ID": "830506", "ALB_TITLE": "Ap' To Parathyro Koito",
+        "DURATION": "254", "RANK_SNG": "1995", "DATE_START": "2000-01-01",
+        "EXPLICIT_TRACK_CONTENT": {"EXPLICIT_LYRICS_STATUS": 0},
+        "DATE_ADD": 1431079416,  # 2015-05-08 UTC
+    }
+
+
+def test_export_row_flattens_track_and_converts_date(liked_track):
+    row = deezer_cli._like_export_row(liked_track, album_meta=None)
+    assert row["date_added"] == "2015-05-08"
+    assert row["artist"] == "Orfeas Peridis"
+    assert "genres" not in row  # no album_meta => no enrichment columns
+
+
+def test_export_row_joins_album_genre_when_enriched(liked_track):
+    meta = {"830506": {"genre_id": 466, "genres": ["Folk", "World"],
+                       "album_release": "2004-06-12", "label": "WM Italy"}}
+    row = deezer_cli._like_export_row(liked_track, album_meta=meta)
+    assert row["genre_id"] == 466
+    assert row["genres"] == "Folk; World"
+    assert row["label"] == "WM Italy"

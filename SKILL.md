@@ -73,7 +73,17 @@ deezer artist-top     <artist_id>                # most popular tracks
 deezer artist-related <artist_id>                # similar artists — discovery jump-off
 deezer artist-radio   <artist_id>                # radio-style mix seeded from the artist
 deezer chart                                     # global top-tracks chart
+deezer genres                                    # Deezer's 22 top-level genres (id + name)
 ```
+
+### How Deezer classifies music
+
+Genre is stored on the **album** (`genre_id` + a `genres[]` list that can name
+sub-genres like "Indie Pop/Folk"); tracks inherit it and **artists carry no
+genre field** (it's derived from their releases). `deezer genres` lists the 22
+formal top-level genres. Above that sit editorial *channels* (moods/activities/
+decades — Chill, Focus, Party, années 80…) and per-genre curated radios; those
+are browse-only in the web player and not (yet) exposed as commands.
 
 The first column is always the **id** — feed it into `like`, `playlist-add`,
 `track`, etc. Add `--limit N` and `--json` to any of these.
@@ -98,7 +108,21 @@ deezer playlist-delete <playlist_id>
 # Discovery tied to your account
 deezer flow            # Deezer Flow — personalised recommendations
 deezer history         # recent listening history
+
+# Bulk export
+deezer export-likes                    # ALL likes as JSON (artist, album, rank, dates…)
+deezer export-likes --csv -o likes.csv # …as CSV to a file
+deezer export-likes --enrich --csv -o likes.csv  # + genre/label/release joined
+                                       # from the public album API (each unique
+                                       # album fetched once, cached forever on disk)
 ```
+
+`export-likes` paginates the whole favourites list. Base fields come from the
+favourites API; `--enrich` joins the album API for `genre_id` / `genres` /
+`album_release` / `label` (genre isn't on the track). The album cache lives at
+`~/.cache/deezer-cli/albums.json`, so a second `--enrich` run only fetches
+newly-liked albums. A full enrich of ~1200 unique albums takes ~3 minutes
+(paced under the public API's ~50 req / 5 s limit).
 
 A discovery→action flow looks like: `deezer search "…"` (or `artist-radio`,
 `flow`, `chart`) to get track ids, then `deezer like <id>` or
@@ -116,7 +140,8 @@ A discovery→action flow looks like: `deezer search "…"` (or `artist-radio`,
 
 | Command | API call |
 | --- | --- |
-| search / track / album / artist / artist-* / chart | `api.deezer.com` public REST |
+| search / track / album / artist / artist-* / chart / genres | `api.deezer.com` public REST |
+| export-likes | `favorite_song.getList` (paginated) + `album/{id}` public REST for `--enrich` |
 | login / whoami | `deezer.getUserData` (→ `checkForm` CSRF token) |
 | likes | `favorite_song.getList` (oldest-first; CLI fetches the tail for recency) |
 | like / unlike | `song.addFavorites` / `song.removeFavorites`, payload `{"IDS":[...]}` |

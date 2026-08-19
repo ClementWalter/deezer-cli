@@ -27,7 +27,7 @@ deezer login                                     # import + validate the arl coo
 deezer search "daft punk"                 # tracks; --type album|artist|playlist
 deezer track  <id> ; deezer album <id> ; deezer artist <id>
 deezer artist-top <id> ; deezer artist-related <id> ; deezer artist-radio <id>
-deezer chart
+deezer chart ; deezer genres
 
 # Account (needs login)
 deezer whoami
@@ -36,6 +36,9 @@ deezer playlists [--owned] ; deezer playlist <id>
 deezer playlist-create "Title" ; deezer playlist-add <pid> <id>...
 deezer playlist-remove <pid> <id>... ; deezer playlist-delete <pid>
 deezer flow ; deezer history
+
+# Bulk export of all your likes (JSON or CSV); --enrich joins album genre/label
+deezer export-likes --enrich --csv -o likes.csv
 ```
 
 The first column of every list is the track/album/artist/playlist **id** — feed

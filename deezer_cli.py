@@ -27,8 +27,10 @@ nothing to paste. `DEEZER_ARL` overrides.
 
 from __future__ import annotations
 
+import csv as csvlib
 import hashlib
 import hmac
+import io
 import json as jsonlib
 import logging
 import os
@@ -52,6 +54,9 @@ log = logging.getLogger("dz")
 PUBLIC_API = "https://api.deezer.com"
 GW_LIGHT = "https://www.deezer.com/ajax/gw-light.php"
 CONFIG_PATH = Path.home() / ".config" / "deezer-cli" / "config.json"
+# Album genre/release/label are immutable, so enrichment lookups are cached
+# forever on disk — a re-run of `export-likes --enrich` only fetches new albums.
+ALBUM_CACHE = Path.home() / ".cache" / "deezer-cli" / "albums.json"
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
@@ -279,6 +284,92 @@ def get_client(require_account: bool = False) -> Deezer:
             "from your browser (or set DEEZER_ARL)."
         )
     return Deezer(arl)
+
+
+# --------------------------------------------------------------------------- #
+# Likes export helpers
+# --------------------------------------------------------------------------- #
+def _all_favorites(dz: Deezer) -> list[dict]:
+    """Every liked track, paginated (the API caps a page at ~2000)."""
+    uid = dz.user_data().get("USER_ID")
+    out, start, page = [], 0, 2000
+    while True:
+        res = dz.gw("favorite_song.getList", {"user_id": uid, "start": start, "nb": page})
+        batch = res.get("data", [])
+        out.extend(batch)
+        total = res.get("total", len(out))
+        start += len(batch)
+        if not batch or start >= total:
+            break
+    return out
+
+
+def _load_album_cache() -> dict:
+    if ALBUM_CACHE.exists():
+        try:
+            return jsonlib.loads(ALBUM_CACHE.read_text())
+        except (OSError, ValueError):
+            return {}
+    return {}
+
+
+def _save_album_cache(cache: dict) -> None:
+    try:
+        ALBUM_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        ALBUM_CACHE.write_text(jsonlib.dumps(cache))
+    except OSError:
+        pass  # cache is best-effort
+
+
+def _enrich_albums(dz: Deezer, album_ids: list[str]) -> dict:
+    """Map album_id -> {genre_id, genres, album_release, label}, hitting the
+    public album API only for ids not already on disk. Honours 429 backoff."""
+    cache = _load_album_cache()
+    todo = [a for a in album_ids if str(a) not in cache]
+    with click.progressbar(todo, label=f"Enriching {len(todo)} new albums") as bar:
+        for i, aid in enumerate(bar):
+            try:
+                a = dz.public(f"album/{aid}")
+                cache[str(aid)] = {
+                    "genre_id": a.get("genre_id"),
+                    "genres": [g["name"] for g in (a.get("genres") or {}).get("data", [])],
+                    "album_release": a.get("release_date"),
+                    "label": a.get("label"),
+                }
+            except (click.ClickException, requests.RequestException):
+                cache[str(aid)] = {}  # negative-cache so a re-run skips it
+            if i % 50 == 49:
+                _save_album_cache(cache)  # checkpoint against interruption
+                time.sleep(1)  # stay under the public API's ~50 req / 5 s ceiling
+    _save_album_cache(cache)
+    return cache
+
+
+def _like_export_row(t: dict, album_meta: dict | None) -> dict:
+    """Flatten a liked-track record (+ optional album enrichment) for export."""
+    explicit = (t.get("EXPLICIT_TRACK_CONTENT") or {}).get("EXPLICIT_LYRICS_STATUS")
+    ts = t.get("DATE_ADD")
+    row = {
+        "track_id": t.get("SNG_ID"),
+        "title": t.get("SNG_TITLE"),
+        "artist_id": t.get("ART_ID"),
+        "artist": t.get("ART_NAME"),
+        "album_id": t.get("ALB_ID"),
+        "album": t.get("ALB_TITLE"),
+        "duration_s": t.get("DURATION"),
+        "rank": t.get("RANK_SNG"),
+        "explicit": explicit,
+        "track_release": t.get("DATE_START"),
+        "date_added": (time.strftime("%Y-%m-%d", time.gmtime(int(ts))) if ts else None),
+        "date_added_ts": ts,
+    }
+    if album_meta is not None:
+        m = album_meta.get(str(t.get("ALB_ID"))) or {}
+        row["genre_id"] = m.get("genre_id")
+        row["genres"] = "; ".join(m.get("genres", [])) or None
+        row["album_release"] = m.get("album_release")
+        row["label"] = m.get("label")
+    return row
 
 
 # --------------------------------------------------------------------------- #
@@ -626,6 +717,54 @@ def history(limit, as_json):
     res = dz.gw("deezer.pageProfile", {"user_id": uid, "tab": "history", "nb": limit})
     data = ((res.get("TAB") or {}).get("history") or {}).get("data", [])
     _emit([_fmt_track_gw(t) for t in data] or ["(none)"], as_json, data)
+
+
+@cli.command(name="export-likes")
+@click.option("--enrich", is_flag=True,
+              help="Join album genre / release / label from the public API "
+                   "(fetches each unique album once, cached on disk).")
+@click.option("--csv", "as_csv", is_flag=True, help="Output CSV instead of JSON.")
+@click.option("-o", "--out", type=click.Path(dir_okay=False, writable=True),
+              help="Write to this file instead of stdout.")
+def export_likes(enrich, as_csv, out):
+    """Dump ALL your liked tracks with their metadata (JSON, or --csv).
+
+    Base fields come from the favourites API (artist, album, popularity, dates,
+    duration, explicit). --enrich adds genre/label by joining each album via the
+    public API — genre is stored on the album, not the track."""
+    dz = get_client(require_account=True)
+    likes_data = _all_favorites(dz)
+    log.info(f"Fetched {len(likes_data)} liked tracks.")
+    album_meta = None
+    if enrich:
+        album_ids = list({str(t.get("ALB_ID")) for t in likes_data if t.get("ALB_ID")})
+        album_meta = _enrich_albums(dz, album_ids)
+    rows = [_like_export_row(t, album_meta) for t in likes_data]
+
+    if as_csv:
+        buf = io.StringIO()
+        writer = csvlib.DictWriter(buf, fieldnames=list(rows[0].keys()) if rows else [])
+        writer.writeheader()
+        writer.writerows(rows)
+        text = buf.getvalue()
+    else:
+        text = jsonlib.dumps(rows, ensure_ascii=False, indent=2)
+
+    if out:
+        Path(out).write_text(text)
+        log.info(f"Wrote {len(rows)} rows to {out}")
+    else:
+        click.echo(text)
+
+
+@cli.command()
+@click.option("--json", "as_json", is_flag=True)
+def genres(as_json):
+    """List Deezer's top-level genres (id + name)."""
+    dz = get_client()
+    data = dz.public("genre").get("data", [])
+    rows = [f"{g['id']}\t{g['name']}" for g in data]
+    _emit(rows or ["(none)"], as_json, data)
 
 
 if __name__ == "__main__":
