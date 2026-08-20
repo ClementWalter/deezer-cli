@@ -74,7 +74,18 @@ deezer artist-related <artist_id>                # similar artists — discovery
 deezer artist-radio   <artist_id>                # radio-style mix seeded from the artist
 deezer chart                                     # global top-tracks chart
 deezer genres                                    # Deezer's 22 top-level genres (id + name)
+deezer resolve track:<id> artist:<id> ...        # id -> name, cache-first (see below)
 ```
+
+### Resolved-id cache
+
+Every read records the ids it touches (track/artist/album/playlist → name) to
+`~/.cache/deezer-cli/ids.json`, namespaced by type since a track and an artist
+can share a numeric id. Deezer ids are immutable, so there is no TTL. `resolve`
+checks this cache first and only calls the API for ids never seen — pass
+`type:id` to scope a lookup, or a bare id to search all types (and `--type` to
+restrict the API fallback). So an id surfaced by an earlier `search` / `likes` /
+`playlist` resolves for free later.
 
 ### How Deezer classifies music
 
@@ -140,7 +151,7 @@ A discovery→action flow looks like: `deezer search "…"` (or `artist-radio`,
 
 | Command | API call |
 | --- | --- |
-| search / track / album / artist / artist-* / chart / genres | `api.deezer.com` public REST |
+| search / track / album / artist / artist-* / chart / genres / resolve | `api.deezer.com` public REST |
 | export-likes | `favorite_song.getList` (paginated) + `album/{id}` public REST for `--enrich` |
 | login / whoami | `deezer.getUserData` (→ `checkForm` CSRF token) |
 | likes | `favorite_song.getList` (oldest-first; CLI fetches the tail for recency) |

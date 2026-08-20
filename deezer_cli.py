@@ -57,6 +57,10 @@ CONFIG_PATH = Path.home() / ".config" / "deezer-cli" / "config.json"
 # Album genre/release/label are immutable, so enrichment lookups are cached
 # forever on disk — a re-run of `export-likes --enrich` only fetches new albums.
 ALBUM_CACHE = Path.home() / ".cache" / "deezer-cli" / "albums.json"
+# Every id the CLI resolves (track/artist/album/playlist -> name) is recorded
+# here as a side effect of reads. Deezer ids are immutable, so there is no TTL;
+# `resolve` reads this first and hits the API only for ids never seen.
+IDS_CACHE = Path.home() / ".cache" / "deezer-cli" / "ids.json"
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
@@ -252,7 +256,45 @@ def _dur(seconds) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
+def _harvest_ids(data) -> list[tuple]:
+    """Pull (type, id, name) tuples out of any track/artist/album/playlist
+    objects in an API payload (public lowercase or gw UPPER_SNAKE), so a read
+    populates the id cache. Descends one level into obvious nested objects
+    (a track's artist/album, an album's track list)."""
+    out: list[tuple] = []
+
+    def visit(obj):
+        if isinstance(obj, list):
+            for x in obj:
+                visit(x)
+            return
+        if not isinstance(obj, dict):
+            return
+        # public shapes
+        if "id" in obj and ("title" in obj or "name" in obj):
+            t = obj.get("type")
+            kind = {"artist": "artist", "album": "album", "playlist": "playlist",
+                    "track": "track"}.get(t) or ("artist" if "name" in obj and "title" not in obj else "track")
+            out.append((kind, str(obj["id"]), obj.get("title") or obj.get("name")))
+            visit(obj.get("artist"))
+            visit(obj.get("album"))
+            visit((obj.get("tracks") or {}).get("data") if isinstance(obj.get("tracks"), dict) else None)
+        # gw shapes
+        if obj.get("SNG_ID"):
+            out.append(("track", str(obj["SNG_ID"]), obj.get("SNG_TITLE")))
+        if obj.get("ART_ID"):
+            out.append(("artist", str(obj["ART_ID"]), obj.get("ART_NAME")))
+        if obj.get("ALB_ID"):
+            out.append(("album", str(obj["ALB_ID"]), obj.get("ALB_TITLE")))
+        if obj.get("PLAYLIST_ID"):
+            out.append(("playlist", str(obj["PLAYLIST_ID"]), obj.get("TITLE")))
+
+    visit(data)
+    return out
+
+
 def _emit(rows: list[str], as_json: bool, data) -> None:
+    _cache_ids(_harvest_ids(data))  # every read records the ids it resolved
     if as_json:
         click.echo(jsonlib.dumps(data, ensure_ascii=False, indent=2))
     else:
@@ -302,6 +344,33 @@ def _all_favorites(dz: Deezer) -> list[dict]:
         if not batch or start >= total:
             break
     return out
+
+
+def _load_ids_cache() -> dict:
+    if IDS_CACHE.exists():
+        try:
+            return jsonlib.loads(IDS_CACHE.read_text())
+        except (OSError, ValueError):
+            return {}
+    return {}
+
+
+def _cache_ids(entries: list[tuple]) -> None:
+    """Record resolved ids as {"<type>:<id>": name}. `entries` are (type, id,
+    name) tuples; ids are namespaced by type since a track and an artist can
+    share a numeric id. Best-effort — never fails a read."""
+    if not entries:
+        return
+    try:
+        cache = _load_ids_cache()
+        for kind, _id, name in entries:
+            if _id is None or name is None:
+                continue
+            cache[f"{kind}:{_id}"] = name
+        IDS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        IDS_CACHE.write_text(jsonlib.dumps(cache, ensure_ascii=False))
+    except OSError:
+        pass
 
 
 def _load_album_cache() -> dict:
@@ -755,6 +824,41 @@ def export_likes(enrich, as_csv, out):
         log.info(f"Wrote {len(rows)} rows to {out}")
     else:
         click.echo(text)
+
+
+@cli.command()
+@click.argument("ids", nargs=-1, required=True)
+@click.option("--type", "kind", type=click.Choice(["track", "artist", "album", "playlist"]),
+              help="Restrict the API fallback to this type (default: try all).")
+def resolve(ids, kind):
+    """Resolve ids to names, local cache first, API only for unseen ids.
+
+    Ids are cached (namespaced by type) as a side effect of every other read, so
+    an id you've already encountered resolves for free. Pass `type:id` to scope
+    one lookup, or a bare id to search all types."""
+    dz = get_client()
+    cache = _load_ids_cache()
+    kinds = [kind] if kind else ["track", "artist", "album", "playlist"]
+    for raw in ids:
+        want_kind, _id = (raw.split(":", 1) if ":" in raw else (None, raw))
+        search_kinds = [want_kind] if want_kind else kinds
+        hit = next((cache.get(f"{k}:{_id}") for k in search_kinds
+                    if cache.get(f"{k}:{_id}")), None)
+        if hit:
+            click.echo(f"{raw}\t{hit}\t(cached)")
+            continue
+        found = None
+        for k in search_kinds:
+            try:
+                obj = dz.public(f"{k}/{_id}")
+                name = obj.get("title") or obj.get("name")
+                if name:
+                    _cache_ids([(k, _id, name)])
+                    found = (k, name)
+                    break
+            except (click.ClickException, requests.RequestException):
+                continue
+        click.echo(f"{raw}\t{found[1]}\t({found[0]})" if found else f"{raw}\t(not found)")
 
 
 @cli.command()

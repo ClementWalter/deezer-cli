@@ -104,3 +104,25 @@ def test_export_row_joins_album_genre_when_enriched(liked_track):
     assert row["genre_id"] == 466
     assert row["genres"] == "Folk; World"
     assert row["label"] == "WM Italy"
+
+
+def test_harvest_ids_pulls_nested_public_track():
+    payload = [{
+        "id": 3135553, "title": "One More Time", "type": "track",
+        "artist": {"id": 27, "name": "Daft Punk", "type": "artist"},
+        "album": {"id": 302127, "title": "Discovery", "type": "album"},
+    }]
+    got = set(deezer_cli._harvest_ids(payload))
+    assert ("track", "3135553", "One More Time") in got
+    assert ("artist", "27", "Daft Punk") in got
+    assert ("album", "302127", "Discovery") in got
+
+
+def test_harvest_ids_pulls_gw_upper_snake_fields():
+    payload = [{"SNG_ID": "9054516", "SNG_TITLE": "Foni",
+                "ART_ID": "70224", "ART_NAME": "Orfeas Peridis",
+                "ALB_ID": "830506", "ALB_TITLE": "Ap' To Parathyro Koito"}]
+    got = set(deezer_cli._harvest_ids(payload))
+    assert ("track", "9054516", "Foni") in got
+    assert ("artist", "70224", "Orfeas Peridis") in got
+    assert ("album", "830506", "Ap' To Parathyro Koito") in got

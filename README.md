@@ -28,6 +28,7 @@ deezer search "daft punk"                 # tracks; --type album|artist|playlist
 deezer track  <id> ; deezer album <id> ; deezer artist <id>
 deezer artist-top <id> ; deezer artist-related <id> ; deezer artist-radio <id>
 deezer chart ; deezer genres
+deezer resolve track:<id> artist:<id>     # id -> name, cache-first (ids auto-cached on every read)
 
 # Account (needs login)
 deezer whoami
