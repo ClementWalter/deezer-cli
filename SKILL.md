@@ -139,6 +139,35 @@ A discovery→action flow looks like: `deezer search "…"` (or `artist-radio`,
 `flow`, `chart`) to get track ids, then `deezer like <id>` or
 `deezer playlist-add <playlist_id> <id> <id>` to act on them.
 
+## Download (needs `login`)
+
+Download tracks as local, DRM-free audio files — the web player's own pipeline,
+reverse-engineered end-to-end:
+
+```bash
+deezer download <track_id> [<id>...]              # mp3_128 by default
+deezer download 3135553 --quality mp3_320         # or mp3_320 / flac
+deezer download 3135553 3135563 -o ~/Music/Deezer # batch + output dir
+deezer download 3135553 --overwrite               # replace existing files
+```
+
+- `--quality mp3_128|mp3_320|flac` (default `mp3_128`) — all three use the same
+  DRM cipher; only the requested format differs.
+- `-o/--out-dir` (default `.`) — created if missing. Files are named
+  `<artist> - <title>.mp3` / `.flac`; a name collision within one run appends
+  ` (<id>)`.
+- Existing files are **skipped** by default (`skip … (exists)`); `--overwrite`
+  replaces them.
+- MP3s get a minimal ID3v2.4 tag (TIT2/TPE1/TALB, UTF-16+BOM); FLACs get their
+  Vorbis comment filled in place with TITLE/ARTIST/ALBUM. No new dependencies —
+  tags are written by hand and the Blowfish stripe uses `pycryptodome`.
+
+Per-track pipeline: `song.getData` → `TRACK_TOKEN`, then **one batched**
+`{URL_MEDIA}/v1/get_url` call (all tokens, single format) → signed CDN URLs
+(~20 h), then the encrypted stream is fetched (each `sources[]` entry tried in
+turn) and decrypted with a Blowfish-CBC "stripe" keyed by an MD5 fold of the
+track id.
+
 ## Output conventions
 
 - Default output is compact, one line per row, tab-separated
@@ -161,6 +190,7 @@ A discovery→action flow looks like: `deezer search "…"` (or `artist-radio`,
 | playlist-create/-add/-remove/-delete | `playlist.create` / `.addSongs` / `.deleteSongs` / `.delete` |
 | flow | `radio.getUserRadio` |
 | history | `deezer.pageProfile` tab `history` → `TAB.history.data` |
+| download | `song.getData` (per track) + `{URL_MEDIA}/v1/get_url` (batched, one format per call) |
 
 ## Gotchas
 
@@ -177,6 +207,19 @@ A discovery→action flow looks like: `deezer search "…"` (or `artist-radio`,
   the newest page so the default view is most-recently-liked.
 - Public search matches Deezer's catalogue, which occasionally surfaces a
   same-name cover/karaoke — check the artist/album columns before acting.
+- **One format per `get_url` call** — the endpoint takes a single
+  `formats[]`; to get both MP3 and FLAC for a track, run `download` twice with
+  different `--quality`.
+- **Signed URLs + track tokens expire in ~20 h** — they're fetched fresh on
+  every `download` run, so this only matters if you reuse a captured URL.
+- **DRM key = the track id string** — the Blowfish key is an MD5 fold of
+  `str(track_id)`. The cipher is symmetric with no auth tag, so a wrong id
+  silently yields garbage audio rather than an error.
+- **FLAC Vorbis comment lives in a type-4 metadata block** — Deezer's FLACs
+  carry the comment (the `reference libFLAC …` vendor string) in a type-4 block,
+  not the spec's type-3. `_flac_tag` fills an existing type-4 block (type-3
+  fallback, insert type-4 if neither) in place, preserving the layout; mutagen
+  reads it back correctly.
 
 ## Tests
 

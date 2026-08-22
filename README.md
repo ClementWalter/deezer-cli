@@ -38,6 +38,12 @@ deezer playlist-create "Title" ; deezer playlist-add <pid> <id>...
 deezer playlist-remove <pid> <id>... ; deezer playlist-delete <pid>
 deezer flow ; deezer history
 
+# Download tracks as local files — DRM-decrypted + tagged (needs login)
+deezer download <track_id> [<id>...]              # mp3_128 by default
+deezer download 3135553 --quality mp3_320         # or mp3_320 / flac
+deezer download 3135553 3135563 -o ~/Music/Deezer # batch + output dir
+deezer download 3135553 --overwrite               # replace existing files
+
 # Bulk export of all your likes (JSON or CSV); --enrich joins album genre/label
 deezer export-likes --enrich --csv -o likes.csv
 ```
@@ -55,6 +61,12 @@ gotchas.
   the web player's own), authenticated with the `arl` cookie plus a per-session
   CSRF token fetched via `deezer.getUserData`. Every private method was captured
   from the live web player and verified end-to-end.
+- **Download** → reverse-engineered from the web player's audio pipeline:
+  `song.getData` yields a per-track token, `{URL_MEDIA}/v1/get_url` exchanges it
+  (plus the account's `license_token`) for a signed CDN URL, and the stream is
+  decrypted with a Blowfish-CBC "stripe" cipher keyed by an MD5 fold of the
+  track id. MP3s get a minimal ID3v2.4 tag; FLACs get their Vorbis comment
+  filled in place (Deezer stores it in a type-4 metadata block).
 
 ## Tests
 

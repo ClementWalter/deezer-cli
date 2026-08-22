@@ -34,9 +34,11 @@ import io
 import json as jsonlib
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -45,7 +47,7 @@ from pathlib import Path
 
 import click
 import requests
-from Crypto.Cipher import AES
+from Crypto.Cipher import AES, Blowfish
 from Crypto.Protocol.KDF import PBKDF2
 
 logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stderr)
@@ -143,6 +145,121 @@ def iter_arls():
 
 
 # --------------------------------------------------------------------------- #
+# DRM decryption (Deezer "BF_CBC_STRIPE", reverse-engineered from the web
+# player's decrypt worker)
+#
+# The signed CDN stream is a "stripe": Blowfish-CBC (8-byte blocks, fixed IV
+# 0..7 re-armed per chunk) is applied to the first 2048 bytes of every
+# 6144-byte group; all other bytes are already plaintext. The 16-byte key is
+# MD5-hex of the *track id string* folded with two interleaved 8-byte
+# constants. Verified byte-for-byte against the player's own worker.
+# --------------------------------------------------------------------------- #
+_DRM_EVEN = (0x61, 0x39, 0x76, 0x30, 0x77, 0x35, 0x65, 0x67)
+_DRM_ODD = (0x31, 0x6E, 0x66, 0x7A, 0x63, 0x38, 0x6C, 0x34)
+_DRM_IV = bytes(range(8))
+_DRM_BLOCK = 2048
+_DRM_CHUNK = 6144
+
+
+def drm_key(track_id: str | int) -> bytes:
+    """The 16-byte Blowfish key for a track (keyed by the track id string)."""
+    h = hashlib.md5(str(track_id).encode()).hexdigest()
+    return bytes(
+        ord(h[i]) ^ ord(h[i + 16]) ^ (_DRM_ODD if i % 2 else _DRM_EVEN)[7 - i // 2]
+        for i in range(16)
+    )
+
+
+def drm_decrypt(data: bytes, track_id: str | int) -> bytes:
+    """Decrypt a BF_CBC_STRIPE stream (the inverse of the player worker)."""
+    key = drm_key(track_id)
+    out = bytearray(data)
+    n = len(out)
+    # The worker's loop is `i + block < len` (strict): a group whose 2048-byte
+    # stripe would run exactly to the end is left untouched. Verified against
+    # the real worker (a 2048-byte buffer is a no-op; 6144 decrypts blk0 only).
+    for i in range(0, n - _DRM_BLOCK, _DRM_CHUNK):
+        cipher = Blowfish.new(key, Blowfish.MODE_CBC, iv=_DRM_IV)
+        out[i:i + _DRM_BLOCK] = cipher.decrypt(bytes(out[i:i + _DRM_BLOCK]))
+    return bytes(out)
+
+
+# --------------------------------------------------------------------------- #
+# Audio tagging (minimal ID3v2.4 for MP3, Vorbis comments for FLAC)
+# --------------------------------------------------------------------------- #
+def _syncsafe(n: int) -> bytes:
+    """ID3v2.4 syncsafe integer (7 bits per byte)."""
+    return bytes([(n >> 21) & 0x7F, (n >> 14) & 0x7F, (n >> 7) & 0x7F, n & 0x7F])
+
+
+def _id3v2_tag(title: str, artist: str, album: str) -> bytes:
+    """A minimal ID3v2.4 header with TIT2/TPE1/TALB (UTF-16, BOM)."""
+    frames = b""
+    for fid, text in (("TIT2", title), ("TPE1", artist), ("TALB", album)):
+        if not text:
+            continue
+        payload = b"\x01" + text.encode("utf-16")  # 0x01 = UTF-16 with BOM (ID3v2 spec)
+        frames += fid.encode("ascii") + _syncsafe(len(payload)) + b"\x00\x00" + payload
+    return b"ID3\x04\x00\x00" + _syncsafe(len(frames)) + frames
+
+
+def _flac_tag(data: bytes, title: str, artist: str, album: str) -> bytes:
+    """Fill (or insert) the VORBIS_COMMENT block with TITLE/ARTIST/ALBUM.
+
+    Deezer's FLAC files carry the Vorbis comment in a type-4 metadata block
+    (the one holding the 'reference libFLAC' vendor string); some encoders use
+    type 3. We fill whichever exists (type 4 preferred) in place, preserving
+    the block's 'last' flag; if neither is present we insert a type-4 block
+    after STREAMINFO."""
+    comments = [f"{k}={v}" for k, v in (("TITLE", title), ("ARTIST", artist),
+                                        ("ALBUM", album)) if v]
+    payload = struct.pack("<I", 0) + struct.pack("<I", len(comments))
+    for c in comments:
+        cb = c.encode("utf-8")
+        payload += struct.pack("<I", len(cb)) + cb
+
+    off, n = 4, len(data)
+    found4 = found3 = None
+    while off < n:
+        hdr = data[off]
+        ln = int.from_bytes(data[off + 1:off + 4], "big")
+        t = hdr & 0x7F
+        if t == 4 and found4 is None:
+            found4 = (off, ln)
+        elif t == 3 and found3 is None:
+            found3 = (off, ln)
+        off += 4 + ln
+        if hdr & 0x80:
+            break
+
+    target = found4 or found3
+    if target is not None:
+        off, ln = target
+        hdr = data[off]
+        size = max(ln, len(payload))
+        block = bytes([hdr]) + size.to_bytes(3, "big") \
+            + payload.ljust(size, b"\x00")
+        return data[:off] + block + data[off + 4 + ln:]
+
+    # No Vorbis comment block — insert a type-4 one after STREAMINFO.
+    hdr0 = data[4]
+    ln0 = int.from_bytes(data[5:8], "big")
+    insert_at = 8 + ln0
+    if hdr0 & 0x80:  # STREAMINFO was the last block; it stops being last
+        return data[:4] + bytes([hdr0 & 0x7F]) + data[5:insert_at] \
+            + bytes([0x84]) + len(payload).to_bytes(3, "big") + payload
+    return data[:insert_at] \
+        + bytes([0x04]) + len(payload).to_bytes(3, "big") + payload \
+        + data[insert_at:]
+
+
+def _safe_filename(name: str) -> str:
+    """Strip characters that are awkward in macOS/Windows filenames."""
+    name = re.sub(r'[/\\:*?"<>|\x00-\x1f]', " ", name)
+    return re.sub(r"\s+", " ", name).strip(" .") or "untitled"
+
+
+# --------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------- #
 def load_config() -> dict:
@@ -175,6 +292,7 @@ class Deezer:
             self.s.cookies.set("arl", arl, domain=".deezer.com")
         self._api_token: str | None = None
         self._user: dict | None = None
+        self._user_data: dict | None = None  # full getUserData response
 
     # -- public REST ------------------------------------------------------- #
     def public(self, path: str, params: dict | None = None) -> dict:
@@ -229,6 +347,7 @@ class Deezer:
         if self._api_token:
             return self._api_token
         res = self.gw("deezer.getUserData", need_token=False)
+        self._user_data = res
         self._user = res.get("USER", {})
         token = res.get("checkForm")
         uid = self._user.get("USER_ID")
@@ -243,6 +362,42 @@ class Deezer:
     def user_data(self) -> dict:
         self._ensure_token()
         return self._user or {}
+
+    # -- DRM download (the web player's own flow) -------------------------- #
+    def song_data(self, track_id: str | int) -> dict:
+        """`song.getData` — the web player's per-track fetch. Returns
+        TRACK_TOKEN, MD5_ORIGIN and display metadata (SNG_TITLE / ART_NAME /
+        ALB_TITLE). Needs the arl session + CSRF token."""
+        return self.gw("song.getData", {"SNG_ID": int(track_id)})
+
+    def media_urls(self, track_tokens: list[str], fmt: str) -> list[dict]:
+        """`{URL_MEDIA}/v1/get_url` — exchange track tokens for signed CDN
+        URLs (~20 h). One call per format; returns one entry (with `sources`)
+        per token, in request order."""
+        ud = self.user_data()
+        url_media = (self._user_data or {}).get("URL_MEDIA") \
+            or "https://media.deezer.com"
+        lic = ((ud.get("OPTIONS") or {}).get("license_token"))
+        if not lic:
+            raise click.ClickException(
+                "No license_token in getUserData — the account may not be "
+                "entitled to stream (check your subscription)."
+            )
+        r = self.s.post(
+            f"{url_media}/v1/get_url",
+            json={
+                "license_token": lic,
+                "media": [{"type": "FULL",
+                           "formats": [{"cipher": "BF_CBC_STRIPE", "format": fmt}]}],
+                "track_tokens": track_tokens,
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if not isinstance(data, dict) or "data" not in data:
+            raise click.ClickException(f"get_url failed: {str(data)[:200]}")
+        return data["data"]
 
 
 # --------------------------------------------------------------------------- #
@@ -447,7 +602,8 @@ def _like_export_row(t: dict, album_meta: dict | None) -> dict:
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 def cli():
     """Deezer from the terminal: search & discover (public API), manage likes
-    and playlists (your account via the browser arl cookie)."""
+    and playlists, and download DRM-free MP3/FLAC files (your account via the
+    browser arl cookie)."""
 
 
 # -- auth -------------------------------------------------------------------- #
@@ -824,6 +980,109 @@ def export_likes(enrich, as_csv, out):
         log.info(f"Wrote {len(rows)} rows to {out}")
     else:
         click.echo(text)
+
+
+@cli.command()
+@click.argument("track_ids", nargs=-1, required=True)
+@click.option("--quality",
+              type=click.Choice(["mp3_128", "mp3_320", "flac"]),
+              default="mp3_128", show_default=True,
+              help="Audio format (all three use the same DRM cipher).")
+@click.option("-o", "--out-dir",
+              type=click.Path(file_okay=False, writable=True),
+              default=".", show_default=True)
+@click.option("--overwrite", is_flag=True, help="Replace files that already exist.")
+def download(track_ids, quality, out_dir, overwrite):
+    """Download tracks as local MP3/FLAC files — DRM-decrypted and tagged.
+
+    Reverse-engineered from the web player: song.getData -> track token,
+    {URL_MEDIA}/v1/get_url -> signed CDN URL, then Blowfish-CBC "stripe"
+    decryption keyed by the track id. Files are written as
+    '<artist> - <title>.mp3' (or .flac) with ID3 / Vorbis tags.
+
+    Examples:
+      deezer download 3135553
+      deezer download 3135553 3135554 --quality mp3_320 -o ~/Music/Deezer
+    """
+    dz = get_client(require_account=True)
+    out = Path(out_dir).expanduser()
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise click.ClickException(f"Cannot write to {out}: {e}")
+
+    # 1) track tokens + metadata (one gw call per track; keep order, skip dead ids)
+    songs: list[tuple[str, dict]] = []
+    for tid in track_ids:
+        if not str(tid).isdigit():
+            log.warning(f"track {tid}: not a numeric track id, skipping")
+            continue
+        try:
+            songs.append((str(tid), dz.song_data(tid)))
+        except (click.ClickException, requests.RequestException) as e:
+            log.warning(f"track {tid}: {getattr(e, 'message', None) or e}")
+
+    if not songs:
+        raise click.ClickException("No tracks could be resolved.")
+
+    # 2) one get_url call for every token (single format per call)
+    fmt = quality.upper()  # MP3_128 / MP3_320 / FLAC
+    try:
+        media = dz.media_urls([sd["TRACK_TOKEN"] for _, sd in songs], fmt)
+    except (click.ClickException, requests.RequestException) as e:
+        raise click.ClickException(f"get_url: {getattr(e, 'message', None) or e}")
+
+    ext = "flac" if quality == "flac" else "mp3"
+    used: set[str] = set()
+    failures = 0
+    for (tid, sd), entry in zip(songs, media):
+        title = sd.get("SNG_TITLE") or f"track {tid}"
+        artist = (sd.get("ART_NAME") or "Unknown Artist").strip()
+        album = sd.get("ALB_TITLE") or ""
+
+        # unique, filesystem-safe name (append the track id on collisions)
+        base = _safe_filename(f"{artist} - {title}")
+        name = f"{base}.{ext}"
+        if name in used:
+            name = f"{base} ({tid}).{ext}"
+        used.add(name)
+        target = out / name
+
+        if target.exists() and not overwrite:
+            click.echo(f"skip   {artist} — {title}\t{target} (exists)")
+            continue
+
+        # 3) download the encrypted stream (try each CDN source in turn)
+        sources = ((entry.get("media") or [{}])[0].get("sources")) or []
+        if not sources:
+            log.error(f"track {tid}: no media source (unavailable?)")
+            failures += 1
+            continue
+        blob = None
+        for src in sources:
+            try:
+                r = dz.s.get(src["url"], timeout=180)
+                if r.status_code == 200:
+                    blob = r.content
+                    break
+            except requests.RequestException:
+                continue
+        if blob is None:
+            log.error(f"track {tid}: CDN download failed")
+            failures += 1
+            continue
+
+        # 4) decrypt + tag + write
+        dec = drm_decrypt(blob, tid)
+        if quality == "flac":
+            dec = _flac_tag(dec, title, artist, album)
+        else:
+            dec = _id3v2_tag(title, artist, album) + dec
+        target.write_bytes(dec)
+        click.echo(f"saved  {artist} — {title}\t{target} ({len(dec) / 1e6:.1f} MB)")
+
+    if failures:
+        raise click.ClickException(f"{failures}/{len(songs)} track(s) failed")
 
 
 @cli.command()
