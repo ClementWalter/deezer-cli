@@ -22,25 +22,29 @@ deezer login                                     # import + validate the arl coo
 
 ## Usage
 
+Every command that takes a track/album/artist/playlist accepts **either the
+numeric id or a name** — names are resolved via search under the hood and the
+pick is logged to stderr (e.g. `"daft punk" → artist 27 (Daft Punk)`).
+
 ```bash
 # Discovery (no login)
 deezer search "daft punk"                 # tracks; --type album|artist|playlist
-deezer track  <id> ; deezer album <id> ; deezer artist <id>
-deezer artist-top <id> ; deezer artist-related <id> ; deezer artist-radio <id>
+deezer track "one more time" ; deezer album "discovery" ; deezer artist "daft punk"
+deezer artist-top "daft punk" ; deezer artist-related 27 ; deezer artist-radio 27
 deezer chart ; deezer genres
 deezer resolve track:<id> artist:<id>     # id -> name, cache-first (ids auto-cached on every read)
 
 # Account (needs login)
 deezer whoami
-deezer likes ; deezer like <id>... ; deezer unlike <id>...
-deezer playlists [--owned] ; deezer playlist <id>
-deezer playlist-create "Title" ; deezer playlist-add <pid> <id>...
-deezer playlist-remove <pid> <id>... ; deezer playlist-delete <pid>
+deezer likes ; deezer like "veridis quo daft punk" ; deezer unlike "veridis quo"
+deezer playlists [--owned] ; deezer playlist "Running"
+deezer playlist-create "Title" ; deezer playlist-add "Running" "get lucky" <id>...
+deezer playlist-remove "Running" "get lucky" ; deezer playlist-delete "Running"
 deezer flow ; deezer history
 
 # Download tracks as local files — DRM-decrypted + tagged (needs login)
-deezer download <track_id> [<id>...]              # mp3_128 by default
-deezer download 3135553 --quality mp3_320         # or mp3_320 / flac
+deezer download <track_id_or_name> [...]          # mp3_128 by default
+deezer download "one more time daft punk" --quality mp3_320   # or flac
 deezer download 3135553 3135563 -o ~/Music/Deezer # batch + output dir
 deezer download 3135553 --overwrite               # replace existing files
 
@@ -48,8 +52,13 @@ deezer download 3135553 --overwrite               # replace existing files
 deezer export-likes --enrich --csv -o likes.csv
 ```
 
-The first column of every list is the track/album/artist/playlist **id** — feed
-it into `like`, `playlist-add`, etc. Add `--limit N` / `--json` to any read.
+The first column of every list is the track/album/artist/playlist **id** —
+still the unambiguous way to feed `like`, `playlist-add`, etc. Name resolution
+rules: track/album/artist names take the top public-search hit; playlist names
+match your own + followed playlists by title (exact, then unique substring —
+ambiguity errors out listing candidates); `unlike` / `playlist-remove` match
+names against your likes / the playlist's own contents, never a catalogue
+search. Add `--limit N` / `--json` to any read.
 
 See [SKILL.md](SKILL.md) for the full command reference, the API method map, and
 gotchas.

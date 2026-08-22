@@ -484,6 +484,95 @@ def get_client(require_account: bool = False) -> Deezer:
 
 
 # --------------------------------------------------------------------------- #
+# Name -> id resolution (commands accept names anywhere an id is expected)
+# --------------------------------------------------------------------------- #
+def _is_id(ref) -> bool:
+    """Numeric refs are Deezer ids; anything else is a name to search for."""
+    return str(ref).isdigit()
+
+
+def _match_track_in(tracks: list[dict], ref: str, where: str) -> dict:
+    """Find exactly one gw track by name inside an already-fetched collection
+    (your likes, a playlist). An exact title match wins; otherwise a unique
+    'artist — title' substring. Ambiguity or no hit is an error — a removal
+    must never guess."""
+    q = ref.lower()
+    exact = [t for t in tracks if (t.get("SNG_TITLE") or "").lower() == q]
+    matches = exact or [
+        t for t in tracks
+        if q in f"{t.get('ART_NAME', '')} — {t.get('SNG_TITLE', '')}".lower()
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise click.ClickException(f'"{ref}" not found in {where}.')
+    listing = "\n".join("  " + _fmt_track_gw(t) for t in matches)
+    raise click.ClickException(
+        f'"{ref}" matches several tracks in {where}:\n{listing}\nUse the id.')
+
+
+def _match_playlist_in(playlists: list[dict], ref: str) -> dict | None:
+    """Find one playlist by title in your (owned + followed) list: exact
+    case-insensitive match first, then a unique substring. None if no hit;
+    ambiguity is an error listing the candidates."""
+    q = ref.lower()
+    exact = [p for p in playlists if (p.get("TITLE") or "").lower() == q]
+    matches = exact or [p for p in playlists if q in (p.get("TITLE") or "").lower()]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        return None
+    listing = "\n".join(f"  {p.get('PLAYLIST_ID')}\t{p.get('TITLE')}" for p in matches)
+    raise click.ClickException(
+        f'"{ref}" matches several of your playlists:\n{listing}\nUse the id.')
+
+
+def _search_top(dz: Deezer, kind: str, query: str) -> dict:
+    """Top public-search hit for a name; error if nothing matches."""
+    path = "search" if kind == "track" else f"search/{kind}"
+    data = dz.public(path, {"q": query, "limit": 1}).get("data", [])
+    _cache_ids(_harvest_ids(data))
+    if not data:
+        raise click.ClickException(f'No {kind} found for "{query}".')
+    return data[0]
+
+
+def resolve_ref(dz: Deezer, ref: str, kind: str) -> str:
+    """Turn a track/artist/album ref (numeric id OR name) into an id. Names go
+    through public search, picking the top hit; the pick is logged to stderr
+    so a wrong guess is visible and correctable."""
+    if _is_id(ref):
+        return str(ref)
+    top = _search_top(dz, kind, ref)
+    name = top.get("title") or top.get("name") or "?"
+    by = (top.get("artist") or {}).get("name")
+    label = f"{by} — {name}" if by else name
+    log.info(f'"{ref}" → {kind} {top["id"]} ({label})')
+    return str(top["id"])
+
+
+def resolve_playlist_ref(dz: Deezer, ref: str, search_fallback: bool = True) -> str:
+    """Turn a playlist ref (numeric id OR name) into an id. Names match your
+    own + followed playlists by title; unknown titles fall back to public
+    search unless `search_fallback` is off (destructive commands only ever
+    target your own list)."""
+    if _is_id(ref):
+        return str(ref)
+    uid = dz.user_data().get("USER_ID")
+    res = dz.gw("deezer.pageProfile", {"user_id": uid, "tab": "playlists", "nb": 500})
+    mine = ((res.get("TAB") or {}).get("playlists") or {}).get("data", [])
+    hit = _match_playlist_in(mine, ref)
+    if hit:
+        log.info(f'"{ref}" → playlist {hit["PLAYLIST_ID"]} ({hit.get("TITLE")})')
+        return str(hit["PLAYLIST_ID"])
+    if not search_fallback:
+        raise click.ClickException(f'"{ref}" matches none of your playlists.')
+    top = _search_top(dz, "playlist", ref)
+    log.info(f'"{ref}" → playlist {top["id"]} ({top.get("title")}, public search)')
+    return str(top["id"])
+
+
+# --------------------------------------------------------------------------- #
 # Likes export helpers
 # --------------------------------------------------------------------------- #
 def _all_favorites(dz: Deezer) -> list[dict]:
@@ -696,12 +785,12 @@ def search(query, kind, limit, as_json):
 
 
 @cli.command()
-@click.argument("track_id")
+@click.argument("ref", metavar="TRACK")
 @click.option("--json", "as_json", is_flag=True)
-def track(track_id, as_json):
-    """Show a track's details."""
+def track(ref, as_json):
+    """Show a track's details (by id or name)."""
     dz = get_client()
-    t = dz.public(f"track/{track_id}")
+    t = dz.public(f"track/{resolve_ref(dz, ref, 'track')}")
     rows = [
         f"{t.get('id')}\t{(t.get('artist') or {}).get('name')} — {t.get('title')}",
         f"album: {(t.get('album') or {}).get('title')}",
@@ -715,12 +804,12 @@ def track(track_id, as_json):
 
 
 @cli.command()
-@click.argument("album_id")
+@click.argument("ref", metavar="ALBUM")
 @click.option("--json", "as_json", is_flag=True)
-def album(album_id, as_json):
-    """Show an album and its track list."""
+def album(ref, as_json):
+    """Show an album and its track list (by id or name)."""
     dz = get_client()
-    a = dz.public(f"album/{album_id}")
+    a = dz.public(f"album/{resolve_ref(dz, ref, 'album')}")
     rows = [
         f"{a.get('id')}\t{(a.get('artist') or {}).get('name')} — {a.get('title')}",
         f"released {a.get('release_date')}  ·  {a.get('nb_tracks')} tracks  ·  "
@@ -733,12 +822,12 @@ def album(album_id, as_json):
 
 
 @cli.command()
-@click.argument("artist_id")
+@click.argument("ref", metavar="ARTIST")
 @click.option("--json", "as_json", is_flag=True)
-def artist(artist_id, as_json):
-    """Show an artist's profile."""
+def artist(ref, as_json):
+    """Show an artist's profile (by id or name)."""
     dz = get_client()
-    a = dz.public(f"artist/{artist_id}")
+    a = dz.public(f"artist/{resolve_ref(dz, ref, 'artist')}")
     rows = [
         f"{a.get('id')}\t{a.get('name')}",
         f"{a.get('nb_fan')} fans  ·  {a.get('nb_album')} albums",
@@ -748,36 +837,39 @@ def artist(artist_id, as_json):
 
 
 @cli.command(name="artist-top")
-@click.argument("artist_id")
+@click.argument("ref", metavar="ARTIST")
 @click.option("--limit", default=25, show_default=True)
 @click.option("--json", "as_json", is_flag=True)
-def artist_top(artist_id, limit, as_json):
-    """An artist's most popular tracks."""
+def artist_top(ref, limit, as_json):
+    """An artist's most popular tracks (by id or name)."""
     dz = get_client()
-    data = dz.public(f"artist/{artist_id}/top", {"limit": limit}).get("data", [])
+    aid = resolve_ref(dz, ref, "artist")
+    data = dz.public(f"artist/{aid}/top", {"limit": limit}).get("data", [])
     _emit([_fmt_track_public(t) for t in data] or ["(none)"], as_json, data)
 
 
 @cli.command(name="artist-related")
-@click.argument("artist_id")
+@click.argument("ref", metavar="ARTIST")
 @click.option("--limit", default=20, show_default=True)
 @click.option("--json", "as_json", is_flag=True)
-def artist_related(artist_id, limit, as_json):
-    """Artists similar to this one — a discovery jump-off."""
+def artist_related(ref, limit, as_json):
+    """Artists similar to this one (by id or name) — a discovery jump-off."""
     dz = get_client()
-    data = dz.public(f"artist/{artist_id}/related", {"limit": limit}).get("data", [])
+    aid = resolve_ref(dz, ref, "artist")
+    data = dz.public(f"artist/{aid}/related", {"limit": limit}).get("data", [])
     rows = [f"{a['id']}\t{a.get('name')}\t{a.get('nb_fan','?')} fans" for a in data]
     _emit(rows or ["(none)"], as_json, data)
 
 
 @cli.command(name="artist-radio")
-@click.argument("artist_id")
+@click.argument("ref", metavar="ARTIST")
 @click.option("--limit", default=25, show_default=True)
 @click.option("--json", "as_json", is_flag=True)
-def artist_radio(artist_id, limit, as_json):
-    """A radio-style track mix seeded from an artist (great for discovery)."""
+def artist_radio(ref, limit, as_json):
+    """A radio-style track mix seeded from an artist (by id or name)."""
     dz = get_client()
-    data = dz.public(f"artist/{artist_id}/radio", {"limit": limit}).get("data", [])
+    aid = resolve_ref(dz, ref, "artist")
+    data = dz.public(f"artist/{aid}/radio", {"limit": limit}).get("data", [])
     _emit([_fmt_track_public(t) for t in data] or ["(none)"], as_json, data)
 
 
@@ -818,21 +910,34 @@ def likes(limit, oldest, as_json):
 
 
 @cli.command()
-@click.argument("track_ids", nargs=-1, required=True)
-def like(track_ids):
-    """Like one or more tracks (by track id)."""
+@click.argument("tracks", nargs=-1, required=True, metavar="TRACK...")
+def like(tracks):
+    """Like one or more tracks (by id or name — names are searched)."""
     dz = get_client(require_account=True)
-    ids = [str(t) for t in track_ids]
+    ids = [resolve_ref(dz, t, "track") for t in tracks]
     dz.gw("song.addFavorites", {"IDS": ids})  # batched: one call for all ids
     click.echo(f"liked {len(ids)} track(s): {' '.join(ids)}")
 
 
 @cli.command()
-@click.argument("track_ids", nargs=-1, required=True)
-def unlike(track_ids):
-    """Remove one or more tracks from your likes."""
+@click.argument("tracks", nargs=-1, required=True, metavar="TRACK...")
+def unlike(tracks):
+    """Remove one or more tracks from your likes (by id or name).
+
+    Names are matched against your likes themselves (not a catalogue search),
+    so the removed track is always one you actually liked."""
     dz = get_client(require_account=True)
-    ids = [str(t) for t in track_ids]
+    # Fetch the likes once, only when at least one ref is a name.
+    favs = None if all(_is_id(t) for t in tracks) else _all_favorites(dz)
+    ids = []
+    for t in tracks:
+        if _is_id(t):
+            ids.append(str(t))
+        else:
+            hit = _match_track_in(favs, t, "your likes")
+            log.info(f'"{t}" → track {hit["SNG_ID"]} '
+                     f'({hit.get("ART_NAME")} — {hit.get("SNG_TITLE")})')
+            ids.append(str(hit["SNG_ID"]))
     dz.gw("song.removeFavorites", {"IDS": ids})
     click.echo(f"unliked {len(ids)} track(s): {' '.join(ids)}")
 
@@ -862,14 +967,14 @@ def playlists(limit, owned, as_json):
 
 
 @cli.command(name="playlist")
-@click.argument("playlist_id")
+@click.argument("ref", metavar="PLAYLIST")
 @click.option("--limit", default=200, show_default=True)
 @click.option("--json", "as_json", is_flag=True)
-def playlist_show(playlist_id, limit, as_json):
-    """Show a playlist's tracks."""
+def playlist_show(ref, limit, as_json):
+    """Show a playlist's tracks (by id or name; yours first, then public)."""
     dz = get_client(require_account=True)
-    res = dz.gw("playlist.getSongs", {"playlist_id": str(playlist_id),
-                                      "start": 0, "nb": limit})
+    pid = resolve_playlist_ref(dz, ref)
+    res = dz.gw("playlist.getSongs", {"playlist_id": pid, "start": 0, "nb": limit})
     data = res.get("data", [])
     _emit([_fmt_track_gw(t) for t in data] or ["(empty)"], as_json, data)
 
@@ -890,34 +995,53 @@ def playlist_create(title, description, as_json):
 
 
 @cli.command(name="playlist-add")
-@click.argument("playlist_id")
-@click.argument("track_ids", nargs=-1, required=True)
-def playlist_add(playlist_id, track_ids):
-    """Add tracks to a playlist."""
+@click.argument("playlist_ref", metavar="PLAYLIST")
+@click.argument("tracks", nargs=-1, required=True, metavar="TRACK...")
+def playlist_add(playlist_ref, tracks):
+    """Add tracks to a playlist (playlist and tracks by id or name)."""
     dz = get_client(require_account=True)
-    songs = [[str(t), 0] for t in track_ids]
-    dz.gw("playlist.addSongs", {"playlist_id": str(playlist_id), "songs": songs})
-    click.echo(f"added {len(track_ids)} track(s) to playlist {playlist_id}")
+    pid = resolve_playlist_ref(dz, playlist_ref, search_fallback=False)
+    songs = [[resolve_ref(dz, t, "track"), 0] for t in tracks]
+    dz.gw("playlist.addSongs", {"playlist_id": pid, "songs": songs})
+    click.echo(f"added {len(tracks)} track(s) to playlist {pid}")
 
 
 @cli.command(name="playlist-remove")
-@click.argument("playlist_id")
-@click.argument("track_ids", nargs=-1, required=True)
-def playlist_remove(playlist_id, track_ids):
-    """Remove tracks from a playlist."""
+@click.argument("playlist_ref", metavar="PLAYLIST")
+@click.argument("tracks", nargs=-1, required=True, metavar="TRACK...")
+def playlist_remove(playlist_ref, tracks):
+    """Remove tracks from a playlist (by id or name).
+
+    Track names are matched against the playlist's own contents (not a
+    catalogue search), so the removed track is always one that is in it."""
     dz = get_client(require_account=True)
-    songs = [[str(t), 0] for t in track_ids]
-    dz.gw("playlist.deleteSongs", {"playlist_id": str(playlist_id), "songs": songs})
-    click.echo(f"removed {len(track_ids)} track(s) from playlist {playlist_id}")
+    pid = resolve_playlist_ref(dz, playlist_ref, search_fallback=False)
+    contents = None
+    if not all(_is_id(t) for t in tracks):
+        contents = dz.gw("playlist.getSongs",
+                         {"playlist_id": pid, "start": 0, "nb": 2000}).get("data", [])
+    songs = []
+    for t in tracks:
+        if _is_id(t):
+            songs.append([str(t), 0])
+        else:
+            hit = _match_track_in(contents, t, f"playlist {pid}")
+            log.info(f'"{t}" → track {hit["SNG_ID"]} '
+                     f'({hit.get("ART_NAME")} — {hit.get("SNG_TITLE")})')
+            songs.append([str(hit["SNG_ID"]), 0])
+    dz.gw("playlist.deleteSongs", {"playlist_id": pid, "songs": songs})
+    click.echo(f"removed {len(tracks)} track(s) from playlist {pid}")
 
 
 @cli.command(name="playlist-delete")
-@click.argument("playlist_id")
-def playlist_delete(playlist_id):
-    """Delete a playlist."""
+@click.argument("ref", metavar="PLAYLIST")
+def playlist_delete(ref):
+    """Delete one of your playlists (by id or name — never resolved via
+    public search, only against your own list)."""
     dz = get_client(require_account=True)
-    dz.gw("playlist.delete", {"playlist_id": str(playlist_id)})
-    click.echo(f"deleted playlist {playlist_id}")
+    pid = resolve_playlist_ref(dz, ref, search_fallback=False)
+    dz.gw("playlist.delete", {"playlist_id": pid})
+    click.echo(f"deleted playlist {pid}")
 
 
 # -- account: discovery ------------------------------------------------------ #
@@ -983,7 +1107,7 @@ def export_likes(enrich, as_csv, out):
 
 
 @cli.command()
-@click.argument("track_ids", nargs=-1, required=True)
+@click.argument("tracks", nargs=-1, required=True, metavar="TRACK...")
 @click.option("--quality",
               type=click.Choice(["mp3_128", "mp3_320", "flac"]),
               default="mp3_128", show_default=True,
@@ -992,9 +1116,10 @@ def export_likes(enrich, as_csv, out):
               type=click.Path(file_okay=False, writable=True),
               default=".", show_default=True)
 @click.option("--overwrite", is_flag=True, help="Replace files that already exist.")
-def download(track_ids, quality, out_dir, overwrite):
+def download(tracks, quality, out_dir, overwrite):
     """Download tracks as local MP3/FLAC files — DRM-decrypted and tagged.
 
+    Tracks are given by id or name (names are searched; the pick is logged).
     Reverse-engineered from the web player: song.getData -> track token,
     {URL_MEDIA}/v1/get_url -> signed CDN URL, then Blowfish-CBC "stripe"
     decryption keyed by the track id. Files are written as
@@ -1002,6 +1127,7 @@ def download(track_ids, quality, out_dir, overwrite):
 
     Examples:
       deezer download 3135553
+      deezer download "daft punk one more time" --quality mp3_320
       deezer download 3135553 3135554 --quality mp3_320 -o ~/Music/Deezer
     """
     dz = get_client(require_account=True)
@@ -1011,16 +1137,14 @@ def download(track_ids, quality, out_dir, overwrite):
     except OSError as e:
         raise click.ClickException(f"Cannot write to {out}: {e}")
 
-    # 1) track tokens + metadata (one gw call per track; keep order, skip dead ids)
+    # 1) track tokens + metadata (one gw call per track; keep order, skip dead refs)
     songs: list[tuple[str, dict]] = []
-    for tid in track_ids:
-        if not str(tid).isdigit():
-            log.warning(f"track {tid}: not a numeric track id, skipping")
-            continue
+    for ref in tracks:
         try:
-            songs.append((str(tid), dz.song_data(tid)))
+            tid = resolve_ref(dz, ref, "track")
+            songs.append((tid, dz.song_data(tid)))
         except (click.ClickException, requests.RequestException) as e:
-            log.warning(f"track {tid}: {getattr(e, 'message', None) or e}")
+            log.warning(f"track {ref}: {getattr(e, 'message', None) or e}")
 
     if not songs:
         raise click.ClickException("No tracks could be resolved.")

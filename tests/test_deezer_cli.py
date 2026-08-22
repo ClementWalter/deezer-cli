@@ -12,6 +12,7 @@ import os
 import struct
 from pathlib import Path
 
+import click
 import pytest
 from Crypto.Cipher import AES, Blowfish
 
@@ -293,6 +294,76 @@ def test_flac_tag_fills_type4_block_deezer_layout():
         "TITLE=One More Time", "ARTIST=Daft Punk", "ALBUM=Discovery"]
     # audio data (after the metadata) is preserved at the end, untouched
     assert out.endswith(audio)
+
+
+# --- name -> id resolution ---------------------------------------------------- #
+@pytest.mark.parametrize("ref,expected", [
+    ("3135553", True), (3135553, True), ("daft punk", False),
+    ("track 42", False), ("", False), ("12 34", False),
+])
+def test_is_id(ref, expected):
+    assert deezer_cli._is_id(ref) is expected
+
+
+@pytest.fixture
+def gw_tracks():
+    return [
+        {"SNG_ID": "1", "SNG_TITLE": "One More Time", "ART_NAME": "Daft Punk",
+         "DURATION": "320", "ALB_TITLE": "Discovery"},
+        {"SNG_ID": "2", "SNG_TITLE": "Around the World", "ART_NAME": "Daft Punk",
+         "DURATION": "428", "ALB_TITLE": "Homework"},
+        {"SNG_ID": "3", "SNG_TITLE": "Time", "ART_NAME": "Pink Floyd",
+         "DURATION": "413", "ALB_TITLE": "The Dark Side of the Moon"},
+    ]
+
+
+def test_match_track_exact_title_wins_over_substring(gw_tracks):
+    # "time" is a substring of two titles, but an exact title match of one
+    assert deezer_cli._match_track_in(gw_tracks, "Time", "likes")["SNG_ID"] == "3"
+
+
+def test_match_track_unique_substring_matches_artist_or_title(gw_tracks):
+    assert deezer_cli._match_track_in(gw_tracks, "around", "likes")["SNG_ID"] == "2"
+
+
+def test_match_track_is_case_insensitive(gw_tracks):
+    assert deezer_cli._match_track_in(gw_tracks, "ONE MORE TIME", "likes")["SNG_ID"] == "1"
+
+
+def test_match_track_ambiguous_substring_raises(gw_tracks):
+    with pytest.raises(click.ClickException, match="matches several"):
+        deezer_cli._match_track_in(gw_tracks, "daft punk", "likes")
+
+
+def test_match_track_no_hit_raises(gw_tracks):
+    with pytest.raises(click.ClickException, match="not found in your likes"):
+        deezer_cli._match_track_in(gw_tracks, "bohemian rhapsody", "your likes")
+
+
+@pytest.fixture
+def gw_playlists():
+    return [
+        {"PLAYLIST_ID": "10", "TITLE": "Running"},
+        {"PLAYLIST_ID": "11", "TITLE": "Running 2024"},
+        {"PLAYLIST_ID": "12", "TITLE": "Chill"},
+    ]
+
+
+def test_match_playlist_exact_title_wins_over_substring(gw_playlists):
+    assert deezer_cli._match_playlist_in(gw_playlists, "running")["PLAYLIST_ID"] == "10"
+
+
+def test_match_playlist_unique_substring(gw_playlists):
+    assert deezer_cli._match_playlist_in(gw_playlists, "chi")["PLAYLIST_ID"] == "12"
+
+
+def test_match_playlist_no_hit_returns_none(gw_playlists):
+    assert deezer_cli._match_playlist_in(gw_playlists, "workout") is None
+
+
+def test_match_playlist_ambiguous_raises(gw_playlists):
+    with pytest.raises(click.ClickException, match="matches several"):
+        deezer_cli._match_playlist_in(gw_playlists, "runn")
 
 
 def test_safe_filename_strips_unwanted_chars():

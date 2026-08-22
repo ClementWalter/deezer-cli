@@ -61,17 +61,40 @@ your browser.
 To grab `arl` manually: deezer.com → devtools → Application → Cookies →
 `https://www.deezer.com` → `arl`.
 
+## Names or ids — everywhere
+
+Every command that takes a track/album/artist/playlist accepts **either the
+numeric id or a name**. Numeric args pass through untouched; anything else is
+resolved under the hood and the pick is logged to stderr so a wrong guess is
+visible:
+
+- **track / album / artist** names → top hit of the public search
+  (`"one more time daft punk" → track 3135553 (Daft Punk — One More Time)`).
+  Include the artist in a track name to disambiguate covers.
+- **playlist** names → matched against *your* owned + followed playlists by
+  title: exact case-insensitive match first, then a unique substring; several
+  hits error out listing the candidates (use the id). `playlist <name>` falls
+  back to public playlist search when nothing of yours matches; the destructive
+  `playlist-add/-remove/-delete` never do.
+- **`unlike` / `playlist-remove`** track names are matched against your likes /
+  the playlist's own contents (exact title, then unique `artist — title`
+  substring) — never a catalogue search, so the removed track is always one
+  that is actually there.
+
+Ids remain the unambiguous fast path — prefer them in scripts and when acting
+on rows you just listed.
+
 ## Discovery (no login)
 
 ```bash
 deezer search "daft punk"                      # tracks (id, artist — title, dur, [album])
 deezer search "random access" --type album     # or artist / playlist
-deezer track  <track_id>                        # full track details
-deezer album  <album_id>                         # album header + track list
-deezer artist <artist_id>                        # artist profile
-deezer artist-top     <artist_id>                # most popular tracks
-deezer artist-related <artist_id>                # similar artists — discovery jump-off
-deezer artist-radio   <artist_id>                # radio-style mix seeded from the artist
+deezer track  "one more time daft punk"         # full track details (id or name)
+deezer album  "random access memories"          # album header + track list
+deezer artist "daft punk"                       # artist profile
+deezer artist-top     "daft punk"               # most popular tracks
+deezer artist-related 27                        # similar artists — discovery jump-off
+deezer artist-radio   27                        # radio-style mix seeded from the artist
 deezer chart                                     # global top-tracks chart
 deezer genres                                    # Deezer's 22 top-level genres (id + name)
 deezer resolve track:<id> artist:<id> ...        # id -> name, cache-first (see below)
@@ -102,19 +125,19 @@ The first column is always the **id** — feed it into `like`, `playlist-add`,
 ## Your account (needs `login`)
 
 ```bash
-# Likes
+# Likes (tracks by id or name)
 deezer likes                       # most-recently-liked first
 deezer likes --oldest --limit 100  # oldest first
-deezer like   <track_id> [<id>...] # like one or more (batched into one call)
-deezer unlike <track_id> [<id>...] # remove from likes
+deezer like   "veridis quo daft punk" [<id>...]  # like one or more (batched)
+deezer unlike "veridis quo" [<id>...]  # names matched against your likes
 
-# Playlists
+# Playlists (playlist + tracks by id or name)
 deezer playlists                   # owned (★) + followed; --owned for just yours
-deezer playlist <playlist_id>      # a playlist's tracks
+deezer playlist "Running"          # a playlist's tracks (yours first, then public)
 deezer playlist-create "Title" --description "..."   # prints the new playlist id
-deezer playlist-add    <playlist_id> <track_id> [<id>...]
-deezer playlist-remove <playlist_id> <track_id> [<id>...]
-deezer playlist-delete <playlist_id>
+deezer playlist-add    "Running" "get lucky" [<id>...]
+deezer playlist-remove "Running" "get lucky"   # names matched against its contents
+deezer playlist-delete "Running"   # name resolved only against YOUR playlists
 
 # Discovery tied to your account
 deezer flow            # Deezer Flow — personalised recommendations
@@ -137,7 +160,9 @@ newly-liked albums. A full enrich of ~1200 unique albums takes ~3 minutes
 
 A discovery→action flow looks like: `deezer search "…"` (or `artist-radio`,
 `flow`, `chart`) to get track ids, then `deezer like <id>` or
-`deezer playlist-add <playlist_id> <id> <id>` to act on them.
+`deezer playlist-add <playlist> <id> <id>` to act on them — or skip the search
+step entirely and pass names directly (`deezer like "instant crush"`), checking
+the logged resolution line.
 
 ## Download (needs `login`)
 
@@ -145,8 +170,8 @@ Download tracks as local, DRM-free audio files — the web player's own pipeline
 reverse-engineered end-to-end:
 
 ```bash
-deezer download <track_id> [<id>...]              # mp3_128 by default
-deezer download 3135553 --quality mp3_320         # or mp3_320 / flac
+deezer download <track_id_or_name> [...]          # mp3_128 by default
+deezer download "one more time daft punk" --quality mp3_320   # or flac
 deezer download 3135553 3135563 -o ~/Music/Deezer # batch + output dir
 deezer download 3135553 --overwrite               # replace existing files
 ```
@@ -206,7 +231,10 @@ track id.
 - `favorite_song.getList` returns favourites **oldest-first**; `likes` reverses
   the newest page so the default view is most-recently-liked.
 - Public search matches Deezer's catalogue, which occasionally surfaces a
-  same-name cover/karaoke — check the artist/album columns before acting.
+  same-name cover/karaoke — check the artist/album columns before acting. The
+  same applies to name refs: resolution takes the **top** search hit, so put
+  the artist in the query (`"get lucky daft punk"`) and check the logged
+  `"…" → track <id> (…)` line; use the id when precision matters.
 - **One format per `get_url` call** — the endpoint takes a single
   `formats[]`; to get both MP3 and FLAC for a track, run `download` twice with
   different `--quality`.
