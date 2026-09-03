@@ -56,6 +56,8 @@ log = logging.getLogger("dz")
 PUBLIC_API = "https://api.deezer.com"
 GW_LIGHT = "https://www.deezer.com/ajax/gw-light.php"
 CONFIG_PATH = Path.home() / ".config" / "deezer-cli" / "config.json"
+
+VAULT_DOCUMENT = "deezer-cli config.json"
 # Album genre/release/label are immutable, so enrichment lookups are cached
 # forever on disk — a re-run of `export-likes --enrich` only fetches new albums.
 ALBUM_CACHE = Path.home() / ".cache" / "deezer-cli" / "albums.json"
@@ -268,7 +270,28 @@ def load_config() -> dict:
             return jsonlib.loads(CONFIG_PATH.read_text())
         except (OSError, ValueError):
             return {}
-    return {}
+    return vault_config()
+
+
+def vault_config() -> dict:
+    """Config from the 1Password vault `Claudine` (Document 'deezer-cli config.json'), when no local file exists.
+
+    Goes through `claudine-secret`, which authenticates with a read-only service
+    account and caches in the macOS Keychain, so nothing is stored in cleartext
+    on disk and no 1Password prompt appears. Returns {} when the helper or the
+    vault is unavailable, leaving the interactive login path untouched.
+    """
+    import shutil
+    import subprocess
+
+    helper = shutil.which("claudine-secret") or str(Path.home() / ".local" / "bin" / "claudine-secret")
+    try:
+        result = subprocess.run([helper, "document", VAULT_DOCUMENT], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0 or not result.stdout.strip():
+        return {}
+    return jsonlib.loads(result.stdout)
 
 
 def save_config(cfg: dict) -> None:
