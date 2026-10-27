@@ -1,3 +1,16 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "pytest==9.1.1",
+#     "click==8.4.2",
+#     "requests==2.34.2",
+#     "pycryptodome==3.23.0",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Unit tests for the pure, network-free helpers in deezer_cli.
 
 Only functions that don't touch the network or the keychain are covered here:
@@ -10,6 +23,7 @@ import base64
 import importlib.util
 import os
 import struct
+import sys
 from pathlib import Path
 
 import click
@@ -370,3 +384,7 @@ def test_safe_filename_strips_unwanted_chars():
     assert deezer_cli._safe_filename('A/B: C *D* "E"') == "A B C D E"
     assert deezer_cli._safe_filename("  spaced   out  ") == "spaced out"
     assert deezer_cli._safe_filename("///") == "untitled"
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-q"]))

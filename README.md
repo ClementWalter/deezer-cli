@@ -1,5 +1,8 @@
 # deezer-cli
 
+**Visibility: private.** It downloads DRM-decrypted tracks (a reimplementation of
+the web player's audio decryption).
+
 Read and manage your Deezer account from the terminal: search & discover music
 (public API, no login) and manage your likes, playlists, Flow, and history (your
 account, via the browser `arl` cookie).
@@ -13,7 +16,7 @@ keychain key, so there's nothing to paste.
 ## Install
 
 ```bash
-ln -sfn "$PWD/bin/deezer" ~/.local/bin/deezer   # put `deezer` on $PATH
+uv run claudine/scripts/link_clis.py            # put `deezer` on $PATH
 deezer login                                     # import + validate the arl cookie
 ```
 
@@ -80,9 +83,9 @@ gotchas.
 ## Tests
 
 ```bash
-uv run --with pytest --with click --with requests --with pycryptodome -- pytest tests/ -q
+uv run --script tests/test_deezer_cli.py
+uv run --script tests/test_vault_config.py
 ```
-
 
 ## Credentials from the 1Password vault
 
