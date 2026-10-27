@@ -1,8 +1,26 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "pytest==9.1.1",
+#     "click==8.4.2",
+#     "requests==2.34.2",
+#     "pycryptodome==3.23.0",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Credential precedence and safe synchronization through the shared vault broker."""
 
 import json
 import subprocess
+import sys
+from pathlib import Path
 
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import deezer_cli as cli
 
 
@@ -133,3 +151,7 @@ def test_auth_status_process_works_without_login(tmp_path):
         capture_output=True, text=True, timeout=15, env=env,
     )
     assert (result.returncode, json.loads(result.stdout)["source"]) == (0, "vault")
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-q"]))

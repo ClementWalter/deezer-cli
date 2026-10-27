@@ -15,7 +15,7 @@ description: >
 
 # Deezer CLI
 
-A terminal client for Deezer at `~/.claude/skills/deezer-cli/deezer_cli.py`. It
+A terminal client for Deezer, `deezer_cli.py`. It
 uses **two** Deezer APIs, picking the cheapest that can answer:
 
 - **Public REST** (`api.deezer.com`) — no auth, powers all discovery: search,
@@ -32,13 +32,10 @@ not guessed.
 
 ## How to invoke
 
-Invoke it as **`deezer`** if it's on `$PATH` (symlink `bin/deezer` into
-`~/.local/bin`), otherwise run the bundled launcher `bin/deezer` (PEP 723 — `uv`
-resolves deps inline on first run). Examples below use `deezer`.
-
-```bash
-ln -sfn ~/.claude/skills/deezer-cli/bin/deezer ~/.local/bin/deezer   # once
-```
+Invoke it as **`deezer`**, on `$PATH` through `claudine/scripts/link_clis.py`,
+which links this repo's `bin/deezer` into `~/.local/bin`; otherwise run
+`<skill-dir>/bin/deezer`. It is a PEP 723 `uv` script, so dependencies resolve
+on first run. Examples below use `deezer`.
 
 ## Authentication
 
@@ -61,7 +58,17 @@ your browser.
 To grab `arl` manually: deezer.com → devtools → Application → Cookies →
 `https://www.deezer.com` → `arl`.
 
-## Names or ids — everywhere
+## Output conventions
+
+- Default output is compact, one line per row, tab-separated
+  (`id  artist — title  m:ss  [album]`) — cheap to read in an agent context.
+- `--json` prints the raw API objects (public commands) or gw `results.data`
+  (account commands) for piping to `jq`/python.
+- Big pulls: redirect to a file and filter rather than reading it all back.
+
+## Commands
+
+### Names or ids — everywhere
 
 Every command that takes a track/album/artist/playlist accepts **either the
 numeric id or a name**. Numeric args pass through untouched; anything else is
@@ -84,7 +91,7 @@ visible:
 Ids remain the unambiguous fast path — prefer them in scripts and when acting
 on rows you just listed.
 
-## Discovery (no login)
+### Discovery (no login)
 
 ```bash
 deezer search "daft punk"                      # tracks (id, artist — title, dur, [album])
@@ -100,7 +107,7 @@ deezer genres                                    # Deezer's 22 top-level genres 
 deezer resolve track:<id> artist:<id> ...        # id -> name, cache-first (see below)
 ```
 
-### Resolved-id cache
+#### Resolved-id cache
 
 Every read records the ids it touches (track/artist/album/playlist → name) to
 `~/.cache/deezer-cli/ids.json`, namespaced by type since a track and an artist
@@ -110,7 +117,7 @@ checks this cache first and only calls the API for ids never seen — pass
 restrict the API fallback). So an id surfaced by an earlier `search` / `likes` /
 `playlist` resolves for free later.
 
-### How Deezer classifies music
+#### How Deezer classifies music
 
 Genre is stored on the **album** (`genre_id` + a `genres[]` list that can name
 sub-genres like "Indie Pop/Folk"); tracks inherit it and **artists carry no
@@ -122,7 +129,7 @@ are browse-only in the web player and not (yet) exposed as commands.
 The first column is always the **id** — feed it into `like`, `playlist-add`,
 `track`, etc. Add `--limit N` and `--json` to any of these.
 
-## Your account (needs `login`)
+### Your account (needs `login`)
 
 ```bash
 # Likes (tracks by id or name)
@@ -158,13 +165,7 @@ favourites API; `--enrich` joins the album API for `genre_id` / `genres` /
 newly-liked albums. A full enrich of ~1200 unique albums takes ~3 minutes
 (paced under the public API's ~50 req / 5 s limit).
 
-A discovery→action flow looks like: `deezer search "…"` (or `artist-radio`,
-`flow`, `chart`) to get track ids, then `deezer like <id>` or
-`deezer playlist-add <playlist> <id> <id>` to act on them — or skip the search
-step entirely and pass names directly (`deezer like "instant crush"`), checking
-the logged resolution line.
-
-## Download (needs `login`)
+### Download (needs `login`)
 
 Download tracks as local, DRM-free audio files — the web player's own pipeline,
 reverse-engineered end-to-end:
@@ -193,29 +194,25 @@ Per-track pipeline: `song.getData` → `TRACK_TOKEN`, then **one batched**
 turn) and decrypted with a Blowfish-CBC "stripe" keyed by an MD5 fold of the
 track id.
 
-## Output conventions
+## Recipes
 
-- Default output is compact, one line per row, tab-separated
-  (`id  artist — title  m:ss  [album]`) — cheap to read in an agent context.
-- `--json` prints the raw API objects (public commands) or gw `results.data`
-  (account commands) for piping to `jq`/python.
-- Big pulls: redirect to a file and filter rather than reading it all back.
+```bash
+# Find something to listen to, then keep it
+deezer artist-radio "daft punk" --limit 10
+deezer playlist-add "Running" <track-id> <track-id>
+# Like a track by name (check the logged resolution line on stderr)
+deezer like "instant crush daft punk"
+# Everything you liked, with genres, to a CSV to filter there
+deezer export-likes --enrich --csv -o likes.csv
+# Offline copy of a playlist's tracks
+deezer playlist "Running" --json | jq -r '.[].SNG_ID' | xargs deezer download -o ~/Music/Deezer
+```
 
-## Method map (verified against the live web player)
-
-| Command | API call |
-| --- | --- |
-| search / track / album / artist / artist-* / chart / genres / resolve | `api.deezer.com` public REST |
-| export-likes | `favorite_song.getList` (paginated) + `album/{id}` public REST for `--enrich` |
-| login / whoami | `deezer.getUserData` (→ `checkForm` CSRF token) |
-| likes | `favorite_song.getList` (oldest-first; CLI fetches the tail for recency) |
-| like / unlike | `song.addFavorites` / `song.removeFavorites`, payload `{"IDS":[...]}` |
-| playlists | `deezer.pageProfile` tab `playlists` → `TAB.playlists.data` |
-| playlist | `playlist.getSongs` |
-| playlist-create/-add/-remove/-delete | `playlist.create` / `.addSongs` / `.deleteSongs` / `.delete` |
-| flow | `radio.getUserRadio` |
-| history | `deezer.pageProfile` tab `history` → `TAB.history.data` |
-| download | `song.getData` (per track) + `{URL_MEDIA}/v1/get_url` (batched, one format per call) |
+A discovery→action flow looks like: `deezer search "…"` (or `artist-radio`,
+`flow`, `chart`) to get track ids, then `deezer like <id>` or
+`deezer playlist-add <playlist> <id> <id>` to act on them — or skip the search
+step entirely and pass names directly (`deezer like "instant crush"`), checking
+the logged resolution line.
 
 ## Gotchas
 
@@ -249,10 +246,27 @@ track id.
   fallback, insert type-4 if neither) in place, preserving the layout; mutagen
   reads it back correctly.
 
+## Method map (verified against the live web player)
+
+| Command | API call |
+| --- | --- |
+| search / track / album / artist / artist-* / chart / genres / resolve | `api.deezer.com` public REST |
+| export-likes | `favorite_song.getList` (paginated) + `album/{id}` public REST for `--enrich` |
+| login / whoami | `deezer.getUserData` (→ `checkForm` CSRF token) |
+| likes | `favorite_song.getList` (oldest-first; CLI fetches the tail for recency) |
+| like / unlike | `song.addFavorites` / `song.removeFavorites`, payload `{"IDS":[...]}` |
+| playlists | `deezer.pageProfile` tab `playlists` → `TAB.playlists.data` |
+| playlist | `playlist.getSongs` |
+| playlist-create/-add/-remove/-delete | `playlist.create` / `.addSongs` / `.deleteSongs` / `.delete` |
+| flow | `radio.getUserRadio` |
+| history | `deezer.pageProfile` tab `history` → `TAB.history.data` |
+| download | `song.getData` (per track) + `{URL_MEDIA}/v1/get_url` (batched, one format per call) |
+
 ## Tests
 
 ```bash
-uv run --with pytest --with click --with requests --with pycryptodome -- pytest tests/ -q
+uv run --script tests/test_deezer_cli.py
+uv run --script tests/test_vault_config.py
 ```
 
 Unit tests cover the network-free helpers (duration/track formatting, Chromium

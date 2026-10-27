@@ -1,7 +1,14 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["click", "requests", "pycryptodome"]
+# dependencies = [
+#     "click==8.4.2",
+#     "requests==2.34.2",
+#     "pycryptodome==3.23.0",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
 # ///
 """deezer-cli — read and edit your Deezer account from the terminal.
 
@@ -744,7 +751,7 @@ def _like_export_row(t: dict, album_meta: dict | None) -> dict:
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
-@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+@click.group(context_settings={"help_option_names": ["-h", "--help"]}, epilog="\b\nExamples:\n  deezer search \"daft punk\" --limit 5\n  deezer likes --json\n  deezer login")
 def cli():
     """Deezer from the terminal: search & discover (public API), manage likes
     and playlists, and download DRM-free MP3/FLAC files (your account via the
@@ -752,7 +759,7 @@ def cli():
 
 
 # -- auth -------------------------------------------------------------------- #
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  deezer login\n  deezer login --source arc")
 @click.option("--source", help="Only try this browser (chrome/arc/brave/edge).")
 def login(source):
     """Import the `arl` cookie from a locally logged-in browser and validate it."""
@@ -783,7 +790,7 @@ def login(source):
     )
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  deezer auth")
 @click.option("--arl", prompt=True, hide_input=True,
               help="Paste the arl cookie value (deezer.com → devtools → cookies).")
 def auth(arl):
@@ -795,7 +802,7 @@ def auth(arl):
     click.echo(f"Logged in as {name} (id {u['USER_ID']}). Saved to {CONFIG_PATH}.")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  deezer whoami\n  deezer whoami --json")
 @click.option("--json", "as_json", is_flag=True)
 def whoami(as_json):
     """Show the logged-in account."""
@@ -814,7 +821,7 @@ def whoami(as_json):
 
 
 # -- discovery (public API) -------------------------------------------------- #
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  deezer search \"daft punk\"\n  deezer search \"random access\" --type album --limit 5")
 @click.argument("query")
 @click.option("--type", "kind", type=click.Choice(["track", "album", "artist", "playlist"]),
               default="track", help="What to search for (default: track).")
@@ -840,7 +847,7 @@ def search(query, kind, limit, as_json):
     _emit(rows or ["(no results)"], as_json, data)
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  deezer track 3135553\n  deezer track \"one more time daft punk\" --json")
 @click.argument("ref", metavar="TRACK")
 @click.option("--json", "as_json", is_flag=True)
 def track(ref, as_json):
@@ -859,7 +866,7 @@ def track(ref, as_json):
     _emit(rows, as_json, t)
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  deezer album \"random access memories\"\n  deezer album 302127 --json")
 @click.argument("ref", metavar="ALBUM")
 @click.option("--json", "as_json", is_flag=True)
 def album(ref, as_json):
@@ -877,7 +884,7 @@ def album(ref, as_json):
     _emit(rows, as_json, a)
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  deezer artist \"daft punk\"\n  deezer artist 27 --json")
 @click.argument("ref", metavar="ARTIST")
 @click.option("--json", "as_json", is_flag=True)
 def artist(ref, as_json):
@@ -892,7 +899,7 @@ def artist(ref, as_json):
     _emit(rows, as_json, a)
 
 
-@cli.command(name="artist-top")
+@cli.command(name="artist-top", epilog="\b\nExamples:\n  deezer artist-top \"daft punk\"\n  deezer artist-top 27 --limit 10 --json")
 @click.argument("ref", metavar="ARTIST")
 @click.option("--limit", default=25, show_default=True)
 @click.option("--json", "as_json", is_flag=True)
@@ -904,7 +911,7 @@ def artist_top(ref, limit, as_json):
     _emit([_fmt_track_public(t) for t in data] or ["(none)"], as_json, data)
 
 
-@cli.command(name="artist-related")
+@cli.command(name="artist-related", epilog="\b\nExamples:\n  deezer artist-related 27\n  deezer artist-related \"daft punk\" --limit 5")
 @click.argument("ref", metavar="ARTIST")
 @click.option("--limit", default=20, show_default=True)
 @click.option("--json", "as_json", is_flag=True)
@@ -917,7 +924,7 @@ def artist_related(ref, limit, as_json):
     _emit(rows or ["(none)"], as_json, data)
 
 
-@cli.command(name="artist-radio")
+@cli.command(name="artist-radio", epilog="\b\nExamples:\n  deezer artist-radio 27\n  deezer artist-radio \"daft punk\" --limit 10 --json")
 @click.argument("ref", metavar="ARTIST")
 @click.option("--limit", default=25, show_default=True)
 @click.option("--json", "as_json", is_flag=True)
@@ -929,7 +936,7 @@ def artist_radio(ref, limit, as_json):
     _emit([_fmt_track_public(t) for t in data] or ["(none)"], as_json, data)
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  deezer chart\n  deezer chart --limit 10 --json")
 @click.option("--limit", default=25, show_default=True)
 @click.option("--json", "as_json", is_flag=True)
 def chart(limit, as_json):
@@ -940,7 +947,7 @@ def chart(limit, as_json):
 
 
 # -- account: likes ---------------------------------------------------------- #
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  deezer likes\n  deezer likes --oldest --limit 100\n  deezer likes --json")
 @click.option("--limit", default=50, show_default=True)
 @click.option("--oldest", is_flag=True,
               help="Oldest likes first (default is most-recently-liked first).")
@@ -965,7 +972,7 @@ def likes(limit, oldest, as_json):
     _emit([_fmt_track_gw(t) for t in data] or ["(no likes)"], as_json, data)
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  deezer like \"veridis quo daft punk\"\n  deezer like 3135553 3135563")
 @click.argument("tracks", nargs=-1, required=True, metavar="TRACK...")
 def like(tracks):
     """Like one or more tracks (by id or name — names are searched)."""
@@ -975,7 +982,7 @@ def like(tracks):
     click.echo(f"liked {len(ids)} track(s): {' '.join(ids)}")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  deezer unlike \"veridis quo\"\n  deezer unlike 3135553")
 @click.argument("tracks", nargs=-1, required=True, metavar="TRACK...")
 def unlike(tracks):
     """Remove one or more tracks from your likes (by id or name).
@@ -999,7 +1006,7 @@ def unlike(tracks):
 
 
 # -- account: playlists ------------------------------------------------------ #
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  deezer playlists\n  deezer playlists --owned --json")
 @click.option("--limit", default=200, show_default=True)
 @click.option("--owned", is_flag=True, help="Only playlists you own (hide followed ones).")
 @click.option("--json", "as_json", is_flag=True)
@@ -1012,6 +1019,8 @@ def playlists(limit, owned, as_json):
     data = ((res.get("TAB") or {}).get("playlists") or {}).get("data", [])
     if owned:
         data = [p for p in data if str(p.get("PARENT_USER_ID")) == str(uid)]
+    # pageProfile ignores `nb` and returns every playlist.
+    data = data[:limit]
     rows = []
     for p in data:
         is_mine = str(p.get("PARENT_USER_ID")) == str(uid)
@@ -1022,7 +1031,7 @@ def playlists(limit, owned, as_json):
     _emit(rows or ["(no playlists)"], as_json, data)
 
 
-@cli.command(name="playlist")
+@cli.command(name="playlist", epilog="\b\nExamples:\n  deezer playlist \"Running\"\n  deezer playlist 1234567890 --limit 50 --json")
 @click.argument("ref", metavar="PLAYLIST")
 @click.option("--limit", default=200, show_default=True)
 @click.option("--json", "as_json", is_flag=True)
@@ -1035,7 +1044,7 @@ def playlist_show(ref, limit, as_json):
     _emit([_fmt_track_gw(t) for t in data] or ["(empty)"], as_json, data)
 
 
-@cli.command(name="playlist-create")
+@cli.command(name="playlist-create", epilog="\b\nExamples:\n  deezer playlist-create \"Running\" --description \"fast songs\"")
 @click.argument("title")
 @click.option("--description", default="")
 @click.option("--json", "as_json", is_flag=True)
@@ -1050,7 +1059,7 @@ def playlist_create(title, description, as_json):
     click.echo(jsonlib.dumps(res) if as_json else f"created playlist {pid}: {title}")
 
 
-@cli.command(name="playlist-add")
+@cli.command(name="playlist-add", epilog="\b\nExamples:\n  deezer playlist-add \"Running\" \"get lucky daft punk\"\n  deezer playlist-add 1234567890 3135553 3135563")
 @click.argument("playlist_ref", metavar="PLAYLIST")
 @click.argument("tracks", nargs=-1, required=True, metavar="TRACK...")
 def playlist_add(playlist_ref, tracks):
@@ -1062,7 +1071,7 @@ def playlist_add(playlist_ref, tracks):
     click.echo(f"added {len(tracks)} track(s) to playlist {pid}")
 
 
-@cli.command(name="playlist-remove")
+@cli.command(name="playlist-remove", epilog="\b\nExamples:\n  deezer playlist-remove \"Running\" \"get lucky\"\n  deezer playlist-remove 1234567890 3135553")
 @click.argument("playlist_ref", metavar="PLAYLIST")
 @click.argument("tracks", nargs=-1, required=True, metavar="TRACK...")
 def playlist_remove(playlist_ref, tracks):
@@ -1089,7 +1098,7 @@ def playlist_remove(playlist_ref, tracks):
     click.echo(f"removed {len(tracks)} track(s) from playlist {pid}")
 
 
-@cli.command(name="playlist-delete")
+@cli.command(name="playlist-delete", epilog="\b\nExamples:\n  deezer playlist-delete \"Running\"\n  deezer playlist-delete 1234567890")
 @click.argument("ref", metavar="PLAYLIST")
 def playlist_delete(ref):
     """Delete one of your playlists (by id or name — never resolved via
@@ -1101,7 +1110,7 @@ def playlist_delete(ref):
 
 
 # -- account: discovery ------------------------------------------------------ #
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  deezer flow\n  deezer flow --limit 10 --json")
 @click.option("--limit", default=25, show_default=True)
 @click.option("--json", "as_json", is_flag=True)
 def flow(limit, as_json):
@@ -1112,7 +1121,7 @@ def flow(limit, as_json):
     _emit([_fmt_track_gw(t) for t in data] or ["(none)"], as_json, data)
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  deezer history\n  deezer history --limit 20 --json")
 @click.option("--limit", default=50, show_default=True)
 @click.option("--json", "as_json", is_flag=True)
 def history(limit, as_json):
@@ -1124,7 +1133,7 @@ def history(limit, as_json):
     _emit([_fmt_track_gw(t) for t in data] or ["(none)"], as_json, data)
 
 
-@cli.command(name="export-likes")
+@cli.command(name="export-likes", epilog="\b\nExamples:\n  deezer export-likes -o likes.json\n  deezer export-likes --enrich --csv -o likes.csv")
 @click.option("--enrich", is_flag=True,
               help="Join album genre / release / label from the public API "
                    "(fetches each unique album once, cached on disk).")
@@ -1162,7 +1171,7 @@ def export_likes(enrich, as_csv, out):
         click.echo(text)
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  deezer download \"one more time daft punk\"\n  deezer download 3135553 --quality flac -o ~/Music/Deezer\n  deezer download 3135553 3135563 --overwrite")
 @click.argument("tracks", nargs=-1, required=True, metavar="TRACK...")
 @click.option("--quality",
               type=click.Choice(["mp3_128", "mp3_320", "flac"]),
@@ -1265,7 +1274,7 @@ def download(tracks, quality, out_dir, overwrite):
         raise click.ClickException(f"{failures}/{len(songs)} track(s) failed")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  deezer resolve track:3135553 artist:27\n  deezer resolve 27 --type artist")
 @click.argument("ids", nargs=-1, required=True)
 @click.option("--type", "kind", type=click.Choice(["track", "artist", "album", "playlist"]),
               help="Restrict the API fallback to this type (default: try all).")
@@ -1300,7 +1309,7 @@ def resolve(ids, kind):
         click.echo(f"{raw}\t{found[1]}\t({found[0]})" if found else f"{raw}\t(not found)")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  deezer genres\n  deezer genres --json")
 @click.option("--json", "as_json", is_flag=True)
 def genres(as_json):
     """List Deezer's top-level genres (id + name)."""
@@ -1310,7 +1319,7 @@ def genres(as_json):
     _emit(rows or ["(none)"], as_json, data)
 
 
-@cli.command("auth-status")
+@cli.command("auth-status", epilog="\b\nExamples:\n  deezer auth-status\n  deezer auth-status --json")
 @click.option("--json", "as_json", is_flag=True, help="Return credential metadata without secrets.")
 def auth_status(as_json: bool) -> None:
     """Inspect vault synchronization. Example: auth-status --json."""
@@ -1325,7 +1334,7 @@ def auth_status(as_json: bool) -> None:
                f"{metadata['source']}; pending={metadata['pending']}; local={metadata['legacy_available']}")
 
 
-@cli.command("auth-sync")
+@cli.command("auth-sync", epilog="\b\nExamples:\n  deezer auth-sync")
 def auth_sync() -> None:
     """Retry pending vault sync or import local credentials. Example: auth-sync."""
     # Broker pending data is newer than any compatibility copy.
@@ -1333,7 +1342,7 @@ def auth_sync() -> None:
     if not config and CONFIG_PATH.exists():
         config = jsonlib.loads(CONFIG_PATH.read_text())
     if not config:
-        raise click.ClickException("No credentials available to synchronize; connect this tool in Brain.")
+        raise click.ClickException("No credentials available to synchronize; run `deezer login` first.")
     metadata = auth_broker("save", config)
     if not metadata:
         raise click.ClickException("Credential broker unavailable; local login is preserved.")
@@ -1343,13 +1352,6 @@ def auth_sync() -> None:
     if metadata.get("pending"):
         raise click.exceptions.Exit(3)
 
-
-# Provider commands share the app and MCP execution policy.
-from pathlib import Path as _PolicyPath
-import sys as _policy_sys
-_policy_sys.path.insert(0, str(_PolicyPath(__file__).resolve().parent))
-from onebrain_policy import install as _install_onebrain_policy
-_install_onebrain_policy(cli, 'deezer')
 
 if __name__ == "__main__":
     cli()
