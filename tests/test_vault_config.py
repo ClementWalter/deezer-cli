@@ -131,6 +131,24 @@ def test_save_clears_pending_after_vault_success(monkeypatch, tmp_path):
     assert not path.with_suffix(".pending").exists()
 
 
+def test_save_is_silent_without_a_broker(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(cli, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(cli, "auth_broker", lambda *a: {})
+    monkeypatch.setattr(cli, "broker_helper", lambda: str(tmp_path / "absent"))
+    cli.save_config({"secret": "credential"})
+    assert "1Password" not in caplog.text
+
+
+def test_save_warns_when_the_broker_fails(monkeypatch, tmp_path, caplog):
+    helper = tmp_path / "claudine-secret"
+    helper.touch()
+    monkeypatch.setattr(cli, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(cli, "auth_broker", lambda *a: {})
+    monkeypatch.setattr(cli, "broker_helper", lambda: str(helper))
+    cli.save_config({"secret": "credential"})
+    assert "1Password synchronization is pending" in caplog.text
+
+
 def test_auth_status_process_works_without_login(tmp_path):
     import os
     import sys

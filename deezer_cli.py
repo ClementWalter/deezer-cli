@@ -282,12 +282,14 @@ def load_config() -> dict:
     return {}
 
 
+def broker_helper() -> str:
+    """Path of the `claudine-secret` vault broker, which most installs do not have."""
+    return shutil.which("claudine-secret") or str(Path.home() / ".local/bin/claudine-secret")
+
+
 def auth_broker(operation: str, config: dict | None = None) -> dict:
     """Use the shared vault broker without exposing credentials in arguments."""
-    import shutil
-    import subprocess
-
-    helper = shutil.which("claudine-secret") or str(Path.home() / ".local/bin/claudine-secret")
+    helper = broker_helper()
     args = [helper, "auth", operation, "deezer"]
     if operation == "status":
         args.append("--json")
@@ -335,7 +337,7 @@ def save_config(cfg: dict) -> None:
     metadata = auth_broker("save", cfg)
     if metadata.get("source") == "vault" and not metadata.get("pending"):
         marker.unlink(missing_ok=True)
-    else:
+    elif Path(broker_helper()).exists():
         logging.getLogger(__name__).warning("Login saved locally; 1Password synchronization is pending.")
 
 
