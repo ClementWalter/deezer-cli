@@ -1,7 +1,7 @@
 # deezer-cli
 
-**Visibility: private.** It downloads DRM-decrypted tracks (a reimplementation of
-the web player's audio decryption).
+**Visibility: public.** It includes a reimplementation of the web player's audio
+decryption to download tracks; use it only for music your subscription entitles you to.
 
 Read and manage your Deezer account from the terminal: search & discover music
 (public API, no login) and manage your likes, playlists, Flow, and history (your
