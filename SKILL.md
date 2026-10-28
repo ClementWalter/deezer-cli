@@ -51,9 +51,10 @@ deezer whoami             # verify the saved session
 `login` decrypts the browser cookie store with the macOS keychain key (may pop
 one "Allow" dialog), finds the first `arl` that validates, and saves it chmod-600
 to `~/.config/deezer-cli/config.json`. `$DEEZER_ARL` overrides. The `arl`
-survives ~1 year unless you log out of deezer.com; if account commands start
-failing with "not logged in", re-run `deezer login` after visiting deezer.com in
-your browser.
+survives ~1 year unless you log out of deezer.com. Without a saved session, or
+when the saved one has expired, an account command imports the browser's current
+`arl` itself, so `login` is optional; when no browser holds a valid one, the error
+says to log in at deezer.com.
 
 To grab `arl` manually: deezer.com → devtools → Application → Cookies →
 `https://www.deezer.com` → `arl`.

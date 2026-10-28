@@ -347,8 +347,10 @@ class Deezer:
     """Deezer client: public REST for discovery, gw-light (arl cookie) for the
     account. The CSRF `api_token` is fetched lazily on the first write."""
 
-    def __init__(self, arl: str | None = None):
+    def __init__(self, arl: str | None = None, refresh=None):
         self.s = requests.Session()
+        # Called once when the arl is rejected; returns a fresh arl or None.
+        self.refresh = refresh
         self.s.headers["User-Agent"] = UA
         self.arl = arl
         if arl:
@@ -375,9 +377,7 @@ class Deezer:
         """Call a gw-light method. `deezer.getUserData` bootstraps the session
         and needs no prior token; everything else reuses the cached one."""
         if not self.arl:
-            raise click.ClickException(
-                "This needs your account. Run `deezer login` (or set DEEZER_ARL)."
-            )
+            raise click.ClickException(NO_SESSION_MESSAGE)
         token = ""
         if need_token:
             token = self._ensure_token()
@@ -415,10 +415,13 @@ class Deezer:
         token = res.get("checkForm")
         uid = self._user.get("USER_ID")
         if not token or not uid or uid == 0:
-            raise click.ClickException(
-                "Not logged in — the arl cookie is missing or expired. "
-                "Log into deezer.com in your browser, then re-run `deezer login`."
-            )
+            fresh = self.refresh() if self.refresh else None
+            self.refresh = None
+            if fresh and fresh != self.arl:
+                self.arl = fresh
+                self.s.cookies.set("arl", fresh, domain=".deezer.com")
+                return self._ensure_token()
+            raise click.ClickException("The Deezer session expired. " + NO_SESSION_MESSAGE)
         self._api_token = token
         return token
 
@@ -535,15 +538,51 @@ def _fmt_track_gw(t: dict) -> str:
     )
 
 
+NO_SESSION_MESSAGE = (
+    "Not connected to a Deezer account. Log in at https://www.deezer.com in Chrome, Arc, Brave or Edge "
+    "on this computer, then retry: the session is read from the browser. If macOS asks to allow access "
+    "to \"Chrome Safe Storage\" (or your browser's), click Always Allow. Or paste your arl cookie into "
+    "the Deezer extension's settings (Claude Desktop → Settings → Extensions → Deezer). "
+    "In a terminal: `deezer login`."
+)
+
+
+def env_arl() -> str | None:
+    """$DEEZER_ARL; Claude Desktop passes an unfilled optional setting as its raw `${user_config.…}` template."""
+    value = (os.environ.get("DEEZER_ARL") or "").strip()
+    return None if not value or value.startswith("${") else value
+
+
+def browser_session(source: str | None = None) -> tuple[str, str, dict] | None:
+    """(browser, arl, user) for the first browser `arl` cookie Deezer accepts, saved for later runs."""
+    for label, arl in iter_arls():
+        if source and label != source:
+            continue
+        try:
+            user = Deezer(arl).user_data()
+        except click.ClickException:
+            continue
+        if user.get("USER_ID"):
+            save_config({"arl": arl, "source": label})
+            return label, arl, user
+    return None
+
+
 def get_client(require_account: bool = False) -> Deezer:
-    """Build a client. Uses $DEEZER_ARL, else the saved config."""
-    arl = os.environ.get("DEEZER_ARL") or load_config().get("arl")
-    if require_account and not arl:
-        raise click.ClickException(
-            "No account session. Run `deezer login` to import the arl cookie "
-            "from your browser (or set DEEZER_ARL)."
-        )
-    return Deezer(arl)
+    """Build a client from $DEEZER_ARL, else the saved config, else (for account commands) the browser."""
+    arl = env_arl()
+    if arl:
+        return Deezer(arl)
+    arl = load_config().get("arl")
+    if not require_account:
+        return Deezer(arl)
+    if not arl:
+        found = browser_session()
+        if found is None:
+            raise click.ClickException(NO_SESSION_MESSAGE)
+        arl = found[1]
+    # A saved arl that expired is replaced by the browser's current one.
+    return Deezer(arl, refresh=lambda: (browser_session() or (None, None))[1])
 
 
 # --------------------------------------------------------------------------- #
@@ -763,31 +802,15 @@ def cli():
 @click.option("--source", help="Only try this browser (chrome/arc/brave/edge).")
 def login(source):
     """Import the `arl` cookie from a locally logged-in browser and validate it."""
-    tried = 0
-    for label, arl in iter_arls():
-        if source and label != source:
-            continue
-        tried += 1
-        dz = Deezer(arl)
-        try:
-            u = dz.user_data()
-        except click.ClickException:
-            continue
-        if u.get("USER_ID"):
-            save_config({"arl": arl, "source": label})
-            name = u.get("BLOG_NAME") or u.get("FIRSTNAME") or u.get("USER_ID")
-            click.echo(f"Logged in as {name} (id {u['USER_ID']}) via {label}. "
-                       f"Saved to {CONFIG_PATH}.")
-            return
-    if tried == 0:
+    found = browser_session(source)
+    if found is None:
         raise click.ClickException(
-            "No `arl` cookie found in any local browser. Log into deezer.com "
+            "No valid `arl` cookie found in any local browser. Log into deezer.com "
             "in Chrome/Arc/Brave/Edge first, then re-run `deezer login`."
         )
-    raise click.ClickException(
-        "Found an `arl` cookie but it did not validate (expired?). Log into "
-        "deezer.com again in your browser, then re-run `deezer login`."
-    )
+    label, _, u = found
+    name = u.get("BLOG_NAME") or u.get("FIRSTNAME") or u.get("USER_ID")
+    click.echo(f"Logged in as {name} (id {u['USER_ID']}) via {label}. Saved to {CONFIG_PATH}.")
 
 
 @cli.command(epilog="\b\nExamples:\n  deezer auth")

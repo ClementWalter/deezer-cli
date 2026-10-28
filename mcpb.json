@@ -1,0 +1,19 @@
+{
+  "display_name": "Deezer",
+  "description": "Search Deezer and manage your likes and playlists from Claude.",
+  "long_description": "Search tracks, albums and artists, browse charts and an artist's top tracks and radio: no setup needed.\n\nTo use your own account (likes, playlists, Flow, listening history):\n1. Log in at https://www.deezer.com in Google Chrome (or Arc, Brave or Edge) on this Mac.\n2. Ask Claude, for example: \"what are my latest Deezer likes?\". The extension reads your Deezer session from the browser.\n3. The first time, macOS may ask whether to allow access to \"Chrome Safe Storage\": click Always Allow.\n\nIf that does not work, paste your arl cookie into this extension's settings instead (deezer.com → View → Developer → Developer Tools → Application → Cookies → arl).\n\nLiking a track or changing a playlist always asks you first.",
+  "platforms": ["darwin"],
+  "env": {
+    "DEEZER_ARL": "${user_config.arl}"
+  },
+  "user_config": {
+    "arl": {
+      "type": "string",
+      "title": "Deezer arl cookie (optional)",
+      "description": "Only if reading the session from your browser does not work. The value of the arl cookie on deezer.com.",
+      "sensitive": true,
+      "required": false,
+      "default": ""
+    }
+  }
+}
